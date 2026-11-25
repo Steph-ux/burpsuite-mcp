@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "burpsuite": {
+      "command": "node",
+      "args": ["/absolute/path/to/burpsuite-mcp/dist/index.js"],
+      "env": {
+        "BURP_HOST": "127.0.0.1",
+        "BURP_PORT": "8080",
+        "BURP_API_PORT": "1337",
+        "BURP_API_KEY": "",
+        "BURP_API_KEY_MODE": "auto",
+        "BURP_EDITION": "auto"
+      }
+    }
+  }
+}
