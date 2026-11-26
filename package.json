@@ -1,7 +1,8 @@
 {
   "name": "burpsuite-mcp",
   "version": "1.0.0",
-  "description": "MCP server for BurpSuite Pro integration",
+  "description": "MCP server for BurpSuite Community and Professional integration",
+  "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
   "bin": {

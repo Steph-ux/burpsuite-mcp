@@ -32,6 +32,7 @@ A **Model Context Protocol (MCP)** server written in TypeScript that exposes **6
 - [Usage Examples](#usage-examples)
 - [Architecture](#architecture)
 - [Troubleshooting](#troubleshooting)
+- [License](#license)
 
 ---
 
@@ -460,3 +461,9 @@ get_scan_issues({ "task_id": "1" })
 - **`scope_get` or `get_all_issues` returns Community local data instead of Burp GUI data**: ensure `burp-extension/burp_mcp_bridge.py` v0.2 is loaded in Burp (`Extensions -> Installed`) and listening on `127.0.0.1:1337`.
 - **HTTPS requests in Repeater or Intruder fail with TLS certificate errors**: verify `BURP_PROXY_TLS_REJECT_UNAUTHORIZED` is `false` (default) when routing through Burp's intercepting proxy.
 - **Upgrading from Community to Pro**: unload `burp_mcp_bridge.py` in Burp, enable the built-in Pro REST API on port `1337`, and set `BURP_API_KEY` in `.env` or your MCP client config.
+
+---
+
+## License
+
+This project is licensed under the [MIT License](./LICENSE).
