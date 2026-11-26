@@ -92,10 +92,11 @@ npm install
 npm run build
 ```
 
-Compiled JavaScript output is written to `dist/index.js` (marked executable and exposed as the `burpsuite-mcp` CLI binary in `package.json`). You can link it globally with `npm link` and run `burpsuite-mcp` directly, or point your MCP client to `dist/index.js`. For watch-mode development:
+Compiled JavaScript output is written to `dist/index.js` (marked executable and exposed as the `burpsuite-mcp` CLI binary in `package.json`). You can link it globally with `npm link` and run `burpsuite-mcp` directly, or point your MCP client to `dist/index.js`. For watch-mode development or running the automated test suite:
 
 ```bash
 npm run dev
+npm test
 ```
 
 ### 2. Optional: Load the Community Bridge Extension
