@@ -78,6 +78,10 @@ export interface RepeaterEntry {
 
 const repeaterHistory = new Map<string, RepeaterEntry>();
 
+export function getRepeaterEntry(id: string): RepeaterEntry | undefined {
+  return repeaterHistory.get(id);
+}
+
 // ---------------------------------------------------------------------------
 // Core send helper
 // ---------------------------------------------------------------------------

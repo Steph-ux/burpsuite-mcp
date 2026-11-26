@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * BurpSuite MCP – Main Entry Point
  *
@@ -28,6 +29,8 @@ import { INTRUDER_TOOLS } from "./modules/intruder.js";
 import { SPIDER_TOOLS } from "./modules/spider.js";
 import { SITEMAP_TOOLS } from "./modules/sitemap.js";
 import { EXTENSIONS_TOOLS } from "./modules/extensions.js";
+import { DECODER_TOOLS } from "./modules/decoder.js";
+import { COMPARER_TOOLS } from "./modules/comparer.js";
 
 // ── Tool shape ────────────────────────────────────────────────────────────────
 
@@ -51,6 +54,8 @@ const ALL_TOOLS: McpTool[] = [
   ...SPIDER_TOOLS,
   ...SITEMAP_TOOLS,
   ...EXTENSIONS_TOOLS,
+  ...DECODER_TOOLS,
+  ...COMPARER_TOOLS,
 ];
 
 /** Fast lookup: tool name → handler entry */
@@ -91,7 +96,9 @@ async function main(): Promise<void> {
   logger.info(
     `BurpSuite MCP starting – proxy=${config.host}:${config.port}, rest=${config.host}:${config.apiPort}, edition=${config.edition}, ${authLabel}`
   );
-  logger.info(`Registered ${ALL_TOOLS.length} tools across 7 modules (proxy:9, scanner:9, repeater:6, intruder:6, spider:7, sitemap:10, extensions:12)`);
+  logger.info(
+    `Registered ${ALL_TOOLS.length} tools across 9 modules (proxy:9, scanner:9, repeater:6, intruder:6, spider:7, sitemap:10, extensions:12, decoder:3, comparer:3)`
+  );
 
   // Create MCP server
   const server = new Server(

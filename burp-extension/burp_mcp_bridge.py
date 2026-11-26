@@ -311,7 +311,21 @@ class BridgeHandler(HttpHandler):
 
         return False, raw_path
 
-    def _parse_message(self, item, msg_id):
+    def _is_binary_content(self, mime_type, content_type):
+        m = (mime_type or "").lower()
+        ct = (content_type or "").lower()
+        if "svg" in m or "svg" in ct:
+            return False
+        binary_mimes = ("png", "jpeg", "jpg", "gif", "webp", "ico", "bmp", "video", "audio", "font", "flash", "pdf", "zip", "binary", "octet-stream")
+        if any(bm in m for bm in binary_mimes):
+            return True
+        if ct.startswith(("video/", "audio/", "font/", "image/")):
+            return True
+        if any(t in ct for t in ("application/octet-stream", "application/pdf", "application/zip", "application/x-gzip")):
+            return True
+        return False
+
+    def _parse_message(self, item, msg_id, include_body=True, max_body=50000):
         req_bytes = item.getRequest()
         res_bytes = item.getResponse()
         svc = item.getHttpService()
@@ -328,7 +342,8 @@ class BridgeHandler(HttpHandler):
                     k, v = h.split(":", 1)
                     req_headers[k.strip().lower()] = v.strip()
             offset = req_info.getBodyOffset()
-            req_body = self.helpers.bytesToString(req_bytes[offset:])
+            req_body_len = max(0, len(req_bytes) - offset)
+            req_body = self.helpers.bytesToString(req_bytes[offset:offset + max_body]) if (include_body and req_body_len > 0) else ""
             url_obj = req_info.getUrl()
             req_obj = {
                 "method": req_info.getMethod(),
@@ -336,6 +351,7 @@ class BridgeHandler(HttpHandler):
                 "path": (url_obj.getPath() + ("?" + url_obj.getQuery() if url_obj.getQuery() else "")) if url_obj else "/",
                 "headers": req_headers,
                 "body": req_body,
+                "bodySize": req_body_len,
             }
 
         res_obj = {}
@@ -351,11 +367,21 @@ class BridgeHandler(HttpHandler):
                     k, v = h.split(":", 1)
                     res_headers[k.strip().lower()] = v.strip()
             offset = res_info.getBodyOffset()
-            res_body = self.helpers.bytesToString(res_bytes[offset:])
+            res_body_len = max(0, len(res_bytes) - offset)
+            ct = res_headers.get("content-type", "")
+            is_binary = self._is_binary_content(mime_type, ct)
+            if not include_body or is_binary:
+                res_body = ""
+                body_skipped = is_binary or (not include_body and res_body_len > 0)
+            else:
+                res_body = self.helpers.bytesToString(res_bytes[offset:offset + max_body])
+                body_skipped = res_body_len > max_body
             res_obj = {
                 "statusCode": status_code,
                 "headers": res_headers,
-                "body": res_body[:50000],
+                "body": res_body,
+                "bodySize": res_body_len,
+                "bodyTruncated": body_skipped,
                 "mimeType": mime_type,
             }
 
@@ -410,7 +436,21 @@ class BridgeHandler(HttpHandler):
             # ── Proxy History ─────────────────────────────────
             if method == "GET" and path == "/v0.1/proxy/history":
                 items = list(self.callbacks.getProxyHistory())
-                messages = [self._parse_message(item, idx + 1) for idx, item in enumerate(items)]
+                include_body = query.get("include_body", ["true"])[0].lower() != "false"
+                url_filter = (query.get("filter", [None])[0] or "").lower()
+                limit_val = query.get("limit", [None])[0]
+                limit_num = int(limit_val) if (limit_val and limit_val.isdigit()) else None
+
+                messages = []
+                for idx, item in enumerate(items):
+                    parsed = self._parse_message(item, idx + 1, include_body=include_body, max_body=16384)
+                    if url_filter:
+                        u = (parsed.get("request", {}).get("url") or parsed.get("path") or "").lower()
+                        if url_filter not in u:
+                            continue
+                    messages.append(parsed)
+                    if limit_num is not None and len(messages) >= limit_num:
+                        break
                 self._send_json(exchange, 200, {"messages": messages})
                 return
 
@@ -418,7 +458,7 @@ class BridgeHandler(HttpHandler):
                 target_id = int(path.rsplit("/", 1)[-1])
                 items = list(self.callbacks.getProxyHistory())
                 if 1 <= target_id <= len(items):
-                    self._send_json(exchange, 200, self._parse_message(items[target_id - 1], target_id))
+                    self._send_json(exchange, 200, self._parse_message(items[target_id - 1], target_id, include_body=True, max_body=100000))
                 else:
                     self._send_json(exchange, 404, {"error": "Proxy history item not found"})
                 return

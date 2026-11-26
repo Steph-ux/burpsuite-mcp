@@ -1,6 +1,6 @@
 # BurpSuite MCP
 
-A **Model Context Protocol (MCP)** server written in TypeScript that exposes **59 tools** across 7 modules to connect MCP-compatible AI clients (Antigravity, OpenCode, Claude Desktop) with **BurpSuite Community Edition** and **BurpSuite Professional**.
+A **Model Context Protocol (MCP)** server written in TypeScript that exposes **65 tools** across 9 modules to connect MCP-compatible AI clients (Antigravity, OpenCode, Claude Desktop) with **BurpSuite Community Edition** and **BurpSuite Professional**.
 
 ---
 
@@ -17,7 +17,7 @@ A **Model Context Protocol (MCP)** server written in TypeScript that exposes **5
   - [Antigravity (`agy`)](#antigravity-agy)
   - [OpenCode](#opencode)
   - [Claude Desktop](#claude-desktop)
-- [Available Tools (59)](#available-tools-59)
+- [Available Tools (65)](#available-tools-65)
   - [Proxy (9)](#proxy-9)
   - [Scanner (9)](#scanner-9)
   - [Repeater (6)](#repeater-6)
@@ -25,6 +25,8 @@ A **Model Context Protocol (MCP)** server written in TypeScript that exposes **5
   - [Spider (7)](#spider-7)
   - [Sitemap & Scope (10)](#sitemap--scope-10)
   - [Extensions & Core (12)](#extensions--core-12)
+  - [Decoder (3)](#decoder-3)
+  - [Comparer (3)](#comparer-3)
 - [Usage Examples](#usage-examples)
 - [Architecture](#architecture)
 - [Troubleshooting](#troubleshooting)
@@ -58,8 +60,9 @@ A **Model Context Protocol (MCP)** server written in TypeScript that exposes **5
 | Target Sitemap & Technologies (`sitemap_get*`) | MCP local sitemap | Live Burp GUI sitemap | Live Burp Pro REST API |
 | Clear Site Map (`sitemap_clear`) | Clears MCP local cache | Clears MCP local cache (GUI clear is manual) | Native API if supported |
 | Scope Management (`scope_*`) | MCP local scope | Live `include`/`exclude`/`check` in Burp GUI | Live Burp Pro REST API |
-| Passive Security Analysis (`start_passive_scan`, `get_all_issues`, `get_issues_for_host`) | 11 local passive checks | 11 passive checks on live Burp sitemap | Native Burp passive audit |
-| Active Scanner (`start_scan`, `get_scan_status`, `get_scan_issues`, `stop_scan`, `list_scans`) | Unsupported notice | Unsupported notice | Native Burp Pro scanner |
+| **Passive Security Analysis** (`start_passive_scan`, `get_all_issues`, `get_issues_for_host`) | 11 local passive checks | 11 passive checks on live Burp sitemap | Native Burp passive audit |
+| **Decoder & Comparer** (`decoder_*`, `comparer_*`) | Full local encoding/decoding/hashing & text/HTTP diff | Full local tools + live Proxy item diffing | Full local tools + live Proxy item diffing |
+| **Active Scanner** (`start_scan`, `get_scan_status`, `get_scan_issues`, `stop_scan`, `list_scans`) | Unsupported notice | Unsupported notice | Native Burp Pro scanner |
 | Burp Configuration (`burp_get_configuration`, `burp_update_configuration`) | Unsupported notice | Live (`saveConfigAsJson` / `loadConfigFromJson`) | Live Burp Pro REST API |
 | Save Project State (`burp_save_state`) | Unsupported (Pro only) | Unsupported (Pro only) | Live Burp Pro REST API |
 | Extensions Management (`extensions_*`) | Unsupported notice | Bridge self-info, logs, and unload | Live Burp Pro REST API |
@@ -85,7 +88,7 @@ npm install
 npm run build
 ```
 
-Compiled JavaScript output is written to `dist/`. For watch-mode development:
+Compiled JavaScript output is written to `dist/index.js` (marked executable and exposed as the `burpsuite-mcp` CLI binary in `package.json`). You can link it globally with `npm link` and run `burpsuite-mcp` directly, or point your MCP client to `dist/index.js`. For watch-mode development:
 
 ```bash
 npm run dev
@@ -198,13 +201,13 @@ A template is provided in [`claude_desktop_config.json`](./claude_desktop_config
 
 ---
 
-## Available Tools (59)
+## Available Tools (65)
 
 ### Proxy (9)
 
 | Tool | Description |
 |---|---|
-| `get_proxy_history` | Retrieve Proxy HTTP history with optional `limit` and URL substring `filter` |
+| `get_proxy_history` | Retrieve Proxy HTTP history with optional `limit`, URL substring `filter`, and `include_body` flag |
 | `get_proxy_history_item` | Retrieve a single Proxy history item by numeric `id` with full request and response |
 | `set_proxy_intercept` | Enable or disable Burp Proxy request/response interception (`enabled`) |
 | `get_intercepted_requests` | List requests currently waiting in the Proxy intercept queue |
@@ -294,9 +297,32 @@ A template is provided in [`claude_desktop_config.json`](./claude_desktop_config
 | `burp_save_state` | Export BurpSuite Pro project state to `file_path` |
 | `burp_send_to_repeater` | Send a Proxy history item (`proxy_history_id`) to a Burp Repeater UI tab |
 
+### Decoder (3)
+
+| Tool | Description |
+|---|---|
+| `decoder_encode` | Encode text using `base64`, `base64url`, `url`, `url_all`, `html`, `hex`, `unicode_escape`, or `gzip_base64` |
+| `decoder_decode` | Decode encoded payloads or JWT tokens (`auto` detection or explicit format) |
+| `decoder_hash` | Compute cryptographic digests (`md5`, `sha1`, `sha256`, `sha512`) |
+
+### Comparer (3)
+
+| Tool | Description |
+|---|---|
+| `comparer_diff_text` | Diff two strings at `lines`, `words`, or `chars` granularity |
+| `comparer_diff_proxy_items` | Diff status codes, response headers, and bodies for two Proxy History items by `left_id` and `right_id` |
+| `comparer_diff_repeater_items` | Diff status codes, response headers, and bodies for two Repeater items by UUID |
+
 ---
 
 ## Usage Examples
+
+### Decode a JWT and Diff Two Proxy Responses
+
+```json
+decoder_decode({ "input": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.sig", "format": "jwt" })
+comparer_diff_proxy_items({ "left_id": 1, "right_id": 2, "mode": "lines" })
+```
 
 ### Inspect Proxy History and Send to Burp Repeater UI
 
@@ -366,15 +392,15 @@ get_scan_issues({ "task_id": "1" })
 +---------------------------------+---------------------------------+
                                   | MCP JSON-RPC over stdio
 +---------------------------------v---------------------------------+
-|                     src/index.ts (59 tools)                       |
+|                     src/index.ts (65 tools)                       |
 |  +---------+ +---------+ +----------+ +----------+ +----------+   |
 |  |  proxy  | | scanner | | repeater | | intruder | |  spider  |   |
 |  +---------+ +---------+ +----------+ +----------+ +----------+   |
-|  +-----------+ +------------+   +-----------------------------+   |
-|  |  sitemap  | | extensions |   | src/utils/local-store.ts    |   |
-|  +-----------+ +------------+   | (Community cache & passive) |   |
-|                                 +--------------+--------------+   |
-|                     src/utils/burp-client.ts   |                  |
+|  +-----------+ +------------+ +---------+ +----------+          |
+|  |  sitemap  | | extensions | | decoder | | comparer |          |
+|  +-----------+ +------------+ +---------+ +----------+          |
+|                     src/utils/local-store.ts                      |
+|                     src/utils/burp-client.ts                      |
 +------------------------+-----------------------+------------------+
                          | REST (:1337)          | HTTP Proxy (:8080)
 +------------------------v-----------------------v------------------+

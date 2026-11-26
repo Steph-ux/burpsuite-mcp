@@ -64,12 +64,31 @@ export function get_proxy_history() {
           type: 'string',
           description: 'Optional URL substring filter. Only items whose URL contains this string are returned.',
         },
+        include_body: {
+          type: 'boolean',
+          description: 'Include request/response bodies (default true). Set to false for compact metadata-only listing.',
+          default: true,
+        },
       },
       required: [],
     },
-    async handler(args: { limit?: number; filter?: string }, burpClient?: BurpClient) {
+    async handler(args: { limit?: number; filter?: string; include_body?: boolean }, burpClient?: BurpClient) {
       const client = resolveClient(burpClient);
       const limit = args.limit ?? 100;
+      const includeBody = args.include_body !== false;
+
+      const stripBodies = (list: Array<Record<string, unknown>>) => {
+        if (includeBody) return list;
+        return list.map((item) => ({
+          ...item,
+          request: item.request
+            ? { ...(item.request as Record<string, unknown>), body: undefined }
+            : undefined,
+          response: item.response
+            ? { ...(item.response as Record<string, unknown>), body: undefined }
+            : undefined,
+        }));
+      };
 
       return client.withRestFallback(
         async () => {
@@ -95,14 +114,14 @@ export function get_proxy_history() {
             items = items.slice(0, limit);
           }
 
-          return { mode: 'burp-rest-api', total: items.length, items };
+          return { mode: 'burp-rest-api', total: items.length, items: stripBodies(items) };
         },
         () => {
-          const items = getLocalHistory(limit, args.filter);
+          const items = getLocalHistory(limit, args.filter) as unknown as Array<Record<string, unknown>>;
           return {
             mode: 'community-local',
             total: items.length,
-            items,
+            items: stripBodies(items),
             ...(items.length === 0
               ? {
                   note:
