@@ -87,7 +87,7 @@ afterEach(async () => {
 });
 
 describe("MCP server end-to-end (stdio & Streamable HTTP)", () => {
-  it("exposes 66 valid unique tools and runs full Community workflow over stdio", async () => {
+  it("exposes 78 valid unique tools and runs full Community workflow over stdio", async () => {
     const target = http.createServer((req, res) => {
       if (req.url === "/login") {
         res.writeHead(200, {
@@ -149,14 +149,20 @@ describe("MCP server end-to-end (stdio & Streamable HTTP)", () => {
 
     const list = await mcp.rpc("tools/list", {});
     const tools = list.result.tools;
-    assert.equal(tools.length, 69);
-    assert.equal(new Set(tools.map((t) => t.name)).size, 69);
+    assert.equal(tools.length, 78);
+    assert.equal(new Set(tools.map((t) => t.name)).size, 78);
     for (const t of tools) {
       assert.equal(t.inputSchema.type, "object", `${t.name} must have object schema`);
     }
 
     const ver = parseTool(await mcp.rpc("tools/call", { name: "burp_get_version", arguments: {} }));
     assert.equal(ver.mode, "community-no-rest-api");
+
+    const collabFallback = parseTool(
+      await mcp.rpc("tools/call", { name: "collaborator_generate_payload", arguments: {} })
+    );
+    assert.equal(collabFallback.supported, false);
+    assert.equal(collabFallback.mode, "pro-bridge-required");
 
     const r1 = parseTool(
       await mcp.rpc("tools/call", {
@@ -311,7 +317,7 @@ describe("MCP server end-to-end (stdio & Streamable HTTP)", () => {
 
     assert.ok(proxyHits >= 4);
     assert.equal(mcp.getOut().trim(), "");
-    assert.ok(mcp.getErr().includes("Registered 69 tools"));
+    assert.ok(mcp.getErr().includes("Registered 78 tools"));
   });
 
   it("supports Burp Pro path API key mode over stdio", async () => {
@@ -363,6 +369,173 @@ describe("MCP server end-to-end (stdio & Streamable HTTP)", () => {
     assert.equal(scan.task_id, "55");
   });
 
+  it("supports Montoya Full Pro Bridge tools over stdio", async () => {
+    const bridge = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => { raw += c.toString(); });
+      req.on("end", () => {
+        const body = raw ? JSON.parse(raw) : {};
+        const url = new URL(req.url, "http://127.0.0.1");
+        if (url.pathname === "/v0.1/" || url.pathname === "/v0.1/burp/version") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ edition: "Burp Suite Professional", version: "2026.11", bridge: true, bridge_type: "montoya" }));
+          return;
+        }
+        if (url.pathname === "/v0.1/issue-definitions") {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "not here" }));
+          return;
+        }
+        if (url.pathname === "/v0.1/knowledge_base/issue_definitions") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify([{ type_index: 101, name: "SQL injection" }]));
+          return;
+        }
+        if (url.pathname === "/v0.1/target/sitemap") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify([{ host: "pro.local", path: "/", protocol: "https", port: 443, responseCode: 200 }]));
+          return;
+        }
+        if (url.pathname === "/v0.1/scanner/issues") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ count: 1, issues: [{ name: "SQL injection", severity: "high", confidence: "certain", host: "pro.local", path: "/search" }] }));
+          return;
+        }
+        if (url.pathname === "/v0.1/collaborator/generate" && req.method === "POST") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ payload: "abc123.oastify.com", interaction_id: "abc123", custom_data: body.custom_data ?? null }));
+          return;
+        }
+        if (url.pathname === "/v0.1/collaborator/interactions") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ count: 1, server: "oastify.com", interactions: [{ interaction_id: "abc123", type: "DNS", client_ip: "10.0.0.5" }] }));
+          return;
+        }
+        if (url.pathname === "/v0.1/intruder" && req.method === "POST") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ sent: true, tab: body.tab_name, has_markers: String(body.request_template ?? "").includes("§") }));
+          return;
+        }
+        if (url.pathname === "/v0.1/organizer") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(req.method === "POST"
+            ? JSON.stringify({ sent: true, host: body.host ?? "pro.local" })
+            : JSON.stringify({ count: 1, items: [{ id: 7, status: "IN_PROGRESS", url: "https://pro.local/admin" }] }));
+          return;
+        }
+        if (url.pathname === "/v0.1/proxy/websockets") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ count: 1, messages: [{ id: 1, direction: "CLIENT_TO_SERVER", payload: "{\"ping\":1}" }] }));
+          return;
+        }
+        if (url.pathname === "/v0.1/scanner/bchecks" && req.method === "POST") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, status: "LOADED_WITHOUT_ERRORS", errors: [] }));
+          return;
+        }
+        if (url.pathname === "/v0.1/bambda" && req.method === "POST") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, status: "LOADED_WITHOUT_ERRORS", errors: [] }));
+          return;
+        }
+        if (url.pathname === "/v0.1/burp/task_engine") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ state: req.method === "POST" ? body.state : "RUNNING" }));
+          return;
+        }
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Endpoint not found in Montoya Bridge", path: url.pathname }));
+      });
+    });
+    const bridgePort = await listen(bridge);
+
+    const mcp = await startStdioMcp({
+      BURP_HOST: "127.0.0.1",
+      BURP_PORT: "8080",
+      BURP_API_PORT: String(bridgePort),
+      BURP_API_KEY: "",
+      BURP_EDITION: "auto",
+    });
+
+    const defs = parseTool(await mcp.rpc("tools/call", { name: "get_issue_definitions", arguments: {} }));
+    assert.equal(defs[0].name, "SQL injection");
+
+    const allIssues = parseTool(await mcp.rpc("tools/call", { name: "get_all_issues", arguments: {} }));
+    assert.equal(allIssues.count, 1);
+    assert.equal(allIssues.issues[0].path, "/search");
+
+    const gen = parseTool(
+      await mcp.rpc("tools/call", {
+        name: "collaborator_generate_payload",
+        arguments: { custom_data: "probe1" },
+      })
+    );
+    assert.equal(gen.payload, "abc123.oastify.com");
+    assert.equal(gen.custom_data, "probe1");
+
+    const poll = parseTool(
+      await mcp.rpc("tools/call", {
+        name: "collaborator_poll_interactions",
+        arguments: { interaction_id: "abc123" },
+      })
+    );
+    assert.equal(poll.count, 1);
+    assert.equal(poll.interactions[0].type, "DNS");
+
+    const intr = parseTool(
+      await mcp.rpc("tools/call", {
+        name: "burp_send_to_intruder",
+        arguments: {
+          host: "pro.local",
+          port: 443,
+          protocol: "https",
+          request_template: "GET /?q=§test§ HTTP/1.1\r\nHost: pro.local\r\n\r\n",
+          tab_name: "ProTest",
+        },
+      })
+    );
+    assert.equal(intr.sent, true);
+    assert.equal(intr.has_markers, true);
+
+    const orgSend = parseTool(
+      await mcp.rpc("tools/call", {
+        name: "burp_send_to_organizer",
+        arguments: { host: "pro.local", port: 443, protocol: "https", request: "GET /admin HTTP/1.1\r\nHost: pro.local\r\n\r\n" },
+      })
+    );
+    assert.equal(orgSend.sent, true);
+
+    const orgList = parseTool(await mcp.rpc("tools/call", { name: "organizer_list_items", arguments: {} }));
+    assert.equal(orgList.count, 1);
+
+    const ws = parseTool(await mcp.rpc("tools/call", { name: "proxy_get_websockets", arguments: {} }));
+    assert.equal(ws.count, 1);
+
+    const bcheck = parseTool(
+      await mcp.rpc("tools/call", {
+        name: "scanner_import_bcheck",
+        arguments: { script: "metadata:\n  language: v2-beta\n  name: \"Test\"" },
+      })
+    );
+    assert.equal(bcheck.ok, true);
+
+    const bambda = parseTool(
+      await mcp.rpc("tools/call", {
+        name: "burp_import_bambda",
+        arguments: { script: "return requestResponse.hasResponse();" },
+      })
+    );
+    assert.equal(bambda.ok, true);
+
+    const engine = parseTool(
+      await mcp.rpc("tools/call", {
+        name: "burp_task_engine",
+        arguments: { state: "PAUSED" },
+      })
+    );
+    assert.equal(engine.state, "PAUSED");
+  });
+
   it("serves Streamable HTTP transport (--http) with Bearer auth and session lifecycle", async () => {
     const probe = http.createServer();
     const httpPort = await listen(probe);
@@ -406,7 +579,7 @@ describe("MCP server end-to-end (stdio & Streamable HTTP)", () => {
     const health = await fetch(`http://127.0.0.1:${httpPort}/health`);
     assert.equal(health.status, 200);
     const healthJson = await health.json();
-    assert.equal(healthJson.tools, 69);
+    assert.equal(healthJson.tools, 78);
 
     const unauth = await fetch(`http://127.0.0.1:${httpPort}/mcp`, {
       method: "POST",
@@ -429,7 +602,7 @@ describe("MCP server end-to-end (stdio & Streamable HTTP)", () => {
     await client.connect(transport);
 
     const list = await client.listTools();
-    assert.equal(list.tools.length, 69);
+    assert.equal(list.tools.length, 78);
 
     const hashRes = await client.callTool({
       name: "decoder_hash",

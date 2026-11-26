@@ -157,6 +157,50 @@ function normaliseIssue(raw: Record<string, unknown>): ScanIssue {
   };
 }
 
+export async function fetchIssueDefinitionsMap(
+  burpClient: BurpClient
+): Promise<{ raw: unknown; definitions: Record<number, Record<string, unknown>> }> {
+  let raw: unknown = [];
+  for (const endpoint of ["/v0.1/issue-definitions", "/v0.1/knowledge_base/issue_definitions"]) {
+    try {
+      raw = await burpClient.get(endpoint);
+      break;
+    } catch (err) {
+      if (BurpClient.isConnectionError(err) || BurpClient.isCommunityBridgeUnsupported(err)) {
+        throw err;
+      }
+      if (err instanceof Error && /^BurpClient \[404\]/.test(err.message)) {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  const definitions: Record<number, Record<string, unknown>> = {};
+  const rawDefs = Array.isArray(raw)
+    ? raw
+    : ((raw as Record<string, unknown>)?.issue_definitions ?? []);
+  for (const def of rawDefs as Record<string, unknown>[]) {
+    const idx = def.type_index ?? def.issue_type_id;
+    if (idx !== undefined) {
+      definitions[idx as number] = def;
+    }
+  }
+  return { raw, definitions };
+}
+
+export async function fetchBridgeScannerIssues(
+  burpClient: BurpClient,
+  host?: string
+): Promise<ScanIssue[]> {
+  const flat = await burpClient
+    .get<{ issues?: Record<string, unknown>[] }>("/v0.1/scanner/issues", {
+      params: host ? { host } : undefined,
+    })
+    .catch(() => null);
+  return (flat?.issues ?? []).map(normaliseIssue);
+}
+
 // ─── Tool definitions ─────────────────────────────────────────────────────────
 
 const startScan: McpTool = {
@@ -183,6 +227,11 @@ const startScan: McpTool = {
         },
         description: "Named scan configurations to apply (optional).",
       },
+      scan_mode: {
+        type: "string",
+        enum: ["crawl_and_audit", "active_audit", "passive_audit"],
+        description: "Scan mode for the Pro Montoya bridge (default: crawl_and_audit).",
+      },
       scope_included: {
         type: "array",
         items: { type: "string" },
@@ -199,6 +248,7 @@ const startScan: McpTool = {
   async handler(args, burpClient) {
     const urls = args.urls as string[];
     const scan_configurations = (args.scan_configurations as Array<{ name: string }>) ?? [];
+    const scan_mode = args.scan_mode as string | undefined;
     const scope_included = (args.scope_included as string[]) ?? urls;
     const scope_excluded = (args.scope_excluded as string[]) ?? [];
 
@@ -212,6 +262,9 @@ const startScan: McpTool = {
 
     if (scan_configurations.length > 0) {
       payload.scan_configurations = scan_configurations;
+    }
+    if (scan_mode) {
+      payload.scan_mode = scan_mode;
     }
 
     return burpClient.withRestFallback(
@@ -450,29 +503,16 @@ const getAllIssues: McpTool = {
   async handler(_args, burpClient) {
     return burpClient.withRestFallback(
       async () => {
-        // Fetch both in parallel
-        const [defsRes, sitemapRes] = await Promise.all([
-          burpClient.get("/v0.1/issue-definitions"),
+        const [{ definitions }, sitemapRes] = await Promise.all([
+          fetchIssueDefinitionsMap(burpClient),
           burpClient.get("/v0.1/target/sitemap"),
         ]);
-
-        // Build a lookup map: type_index -> definition
-        const definitions: Record<number, Record<string, unknown>> = {};
-        const rawDefs = Array.isArray(defsRes)
-          ? defsRes
-          : ((defsRes as Record<string,unknown>)?.issue_definitions ?? []);
-        for (const def of rawDefs as Record<string, unknown>[]) {
-          const idx = def.type_index ?? def.issue_type_id;
-          if (idx !== undefined) {
-            definitions[idx as number] = def;
-          }
-        }
 
         // Collect all issues from sitemap nodes
         const allIssues: ScanIssue[] = [];
         const sitemap: Record<string, unknown>[] = Array.isArray(sitemapRes)
           ? (sitemapRes as Record<string, unknown>[])
-          : (((sitemapRes as Record<string,unknown>)?.sitemap as Record<string,unknown>[]) ?? []);
+          : (((sitemapRes as Record<string, unknown>)?.sitemap as Record<string, unknown>[]) ?? []);
 
         for (const node of sitemap) {
           const nodeIssues: Record<string, unknown>[] = Array.isArray(node.issues)
@@ -487,9 +527,14 @@ const getAllIssues: McpTool = {
                 description: (issue.description ?? def?.description ?? "") as string,
                 remediation: (issue.remediation ?? def?.remediation ?? "") as string,
                 name: (issue.name ?? def?.name ?? "Unknown") as string,
-              }),
+              })
             );
           }
+        }
+
+        // Also include bridge-wide Pro issues if sitemap nodes omitted any
+        if (allIssues.length === 0) {
+          allIssues.push(...(await fetchBridgeScannerIssues(burpClient)));
         }
 
         return { mode: "burp-rest-api", count: allIssues.length, issues: allIssues };
@@ -512,7 +557,7 @@ const getIssueDefinitions: McpTool = {
   },
   async handler(_args, burpClient) {
     return burpClient.withRestFallback(
-      () => burpClient.get("/v0.1/issue-definitions"),
+      async () => (await fetchIssueDefinitionsMap(burpClient)).raw,
       () => ({
         mode: "community-local-passive",
         count: PASSIVE_ISSUE_DEFINITIONS.length,
@@ -546,20 +591,10 @@ const getIssuesForHost: McpTool = {
 
     return burpClient.withRestFallback(
       async () => {
-        const [sitemapRes, defsRes] = await Promise.all([
+        const [sitemapRes, { definitions }] = await Promise.all([
           burpClient.get("/v0.1/target/sitemap", { params: { base_url: host } }),
-          burpClient.get("/v0.1/issue-definitions"),
+          fetchIssueDefinitionsMap(burpClient),
         ]);
-
-        // Build definitions lookup
-        const definitions: Record<number, Record<string, unknown>> = {};
-        const rawDefs = Array.isArray(defsRes)
-          ? defsRes
-          : ((defsRes as Record<string,unknown>)?.issue_definitions ?? []);
-        for (const def of rawDefs as Record<string, unknown>[]) {
-          const idx = def.type_index ?? def.issue_type_id;
-          if (idx !== undefined) definitions[idx as number] = def;
-        }
 
         // Collect issues for the given host
         const sitemap: Record<string, unknown>[] = Array.isArray(sitemapRes)
@@ -592,6 +627,10 @@ const getIssuesForHost: McpTool = {
               }),
             );
           }
+        }
+
+        if (issues.length === 0) {
+          issues.push(...(await fetchBridgeScannerIssues(burpClient, host)));
         }
 
         return { mode: "burp-rest-api", host, count: issues.length, issues };

@@ -1,26 +1,28 @@
 # -*- coding: utf-8 -*-
 """
-Optional BurpSuite Community Edition REST Bridge Extension (Jython)
-====================================================================
-BurpSuite Community Edition does not ship with PortSwigger's built-in :1337
-REST API (which is Pro-only). Load this extension in Burp Community
-(Extensions -> Add -> Extension type: Python) to expose live Burp Community
-control on 127.0.0.1:1337:
-  - Proxy History, Live Proxy Intercept (toggle/list/forward/drop), Live Match & Replace
-  - Target Sitemap & Scope (read/add/remove/check)
-  - Send to Repeater UI
-  - Burp Configuration (saveConfigAsJson / loadConfigFromJson)
-  - Bridge Extension metadata & unload
+BurpSuite MCP Bridge Extension (Jython - Community & Pro)
+=========================================================
+Note: For BurpSuite Pro 2023+/2026+, the compiled Montoya Java extension
+`burp-extension/burpsuite-mcp-bridge.jar` is recommended (full modern
+Crawler + Active Audit, Collaborator, WebSockets, Organizer, BChecks,
+Bambda, and Task Engine without requiring Jython).
 
-Note: burpsuite-mcp ALSO works in Community Edition without loading this file
-(via local proxy/crawler/passive fallback on port 8080), and works natively
-with BurpSuite Pro when you upgrade and set BURP_API_KEY.
+This Jython bridge remains maintained for Community Edition and legacy Pro
+setups (Extensions -> Add -> Extension type: Python) on 127.0.0.1:1337:
+  - Proxy History, Live Proxy Intercept, Live Match & Replace
+  - Target Sitemap & Scope (with live Pro Scan Issues attached)
+  - Burp Pro Active/Passive Scan (/v0.1/scan) & Issue Definitions
+  - Burp Pro Collaborator OAST (/v0.1/collaborator/*)
+  - Send to Repeater UI & Send to Intruder UI
+  - Burp Configuration (saveConfigAsJson / loadConfigFromJson)
 """
 
+import base64
 import json
 import os
 import re
 import threading
+import time
 import traceback
 import uuid
 from urlparse import urlparse, parse_qs
@@ -245,6 +247,56 @@ class BridgeHandler(HttpHandler):
         self.api_key = api_key or ""
         self.proxy_ctrl = proxy_ctrl
         self.scope_rules = {"include": [], "exclude": []}
+        self.scan_lock = threading.Lock()
+        self.scans = {}
+        self.next_scan_id = 1
+        self.collab_ctx = None
+
+    def _is_pro(self):
+        try:
+            ver = list(self.callbacks.getBurpVersion())
+            return bool(ver and "pro" in str(ver[0]).lower())
+        except Exception:
+            return False
+
+    def _serialize_scan_issue(self, issue):
+        u = issue.getUrl()
+        url_str = str(u) if u else ""
+        parsed = urlparse(url_str) if url_str else None
+        origin = ("%s://%s" % (parsed.scheme, parsed.netloc)) if (parsed and parsed.netloc) else ""
+        path = ((parsed.path or "/") + (("?" + parsed.query) if parsed.query else "")) if parsed else "/"
+        sev = (issue.getSeverity() or "Information").lower()
+        if sev == "information":
+            sev = "info"
+        return {
+            "name": issue.getIssueName() or "Unknown",
+            "severity": sev,
+            "confidence": (issue.getConfidence() or "Tentative").lower(),
+            "origin": origin,
+            "host": issue.getHttpService().getHost() if issue.getHttpService() else "",
+            "base_url": url_str,
+            "path": path,
+            "detail": issue.getIssueDetail() or "",
+            "description": issue.getIssueDetail() or issue.getIssueBackground() or "",
+            "remediation": issue.getRemediationDetail() or issue.getRemediationBackground() or "",
+            "type_index": issue.getIssueType(),
+        }
+
+    def _decode_b64_or_raw(self, val):
+        if not val:
+            return ""
+        trimmed = val.strip()
+        if trimmed.startswith(("GET ", "POST ", "PUT ", "DELETE ", "HEAD ", "OPTIONS ", "PATCH ", "HTTP/")):
+            return val
+        try:
+            return base64.b64decode(trimmed).decode("utf-8", "replace")
+        except Exception:
+            return val
+
+    def _ensure_collab(self):
+        if self.collab_ctx is None:
+            self.collab_ctx = self.callbacks.createBurpCollaboratorClientContext()
+        return self.collab_ctx
 
     def _build_raw_request(self, req_obj, host):
         if isinstance(req_obj, _STR_TYPES):
@@ -528,9 +580,25 @@ class BridgeHandler(HttpHandler):
             # ── Target Sitemap & Scope ────────────────────────
             if method == "GET" and path == "/v0.1/target/sitemap":
                 host_filter = query.get("host", [None])[0] or query.get("base_url", [None])[0]
-                prefix = ("http://" + host_filter) if host_filter and "://" not in host_filter else host_filter
-                items = list(self.callbacks.getSiteMap(prefix))
-                nodes = [self._parse_message(item, idx + 1) for idx, item in enumerate(items)]
+                prefix = ("https://" + host_filter) if host_filter and "://" not in host_filter else host_filter
+                items = list(self.callbacks.getSiteMap(None))
+                issues_by_url = {}
+                if self._is_pro():
+                    for iss in list(self.callbacks.getScanIssues(prefix if prefix else None) or []):
+                        serialized = self._serialize_scan_issue(iss)
+                        issues_by_url.setdefault(serialized["base_url"], []).append(serialized)
+                nf = (host_filter or "").lower()
+                nodes = []
+                for idx, item in enumerate(items):
+                    parsed = self._parse_message(item, idx + 1)
+                    u_str = (parsed.get("request", {}).get("url") or "").lower()
+                    h_str = (parsed.get("host") or "").lower()
+                    if nf and nf not in h_str and nf not in u_str:
+                        continue
+                    node_issues = issues_by_url.get(parsed.get("request", {}).get("url", ""), [])
+                    if node_issues:
+                        parsed["issues"] = node_issues
+                    nodes.append(parsed)
                 self._send_json(exchange, 200, nodes)
                 return
 
@@ -559,6 +627,250 @@ class BridgeHandler(HttpHandler):
                         if not any(r.get("url") == u for r in self.scope_rules["exclude"]):
                             self.scope_rules["exclude"].append({"enabled": True, "url": u})
                 self._send_json(exchange, 200, {"updated": True})
+                return
+
+            # ── Scanner, Collaborator & Intruder (Pro) ────────
+            if method == "POST" and path == "/v0.1/scan":
+                if not self._is_pro():
+                    self._send_json(exchange, 501, {"error": "Endpoint not supported by Community Bridge"})
+                    return
+                body = self._read_body(exchange)
+                urls = [str(u) for u in (body.get("urls") or []) if u]
+                captured = body.get("captured_requests") or []
+                if not urls and not captured:
+                    self._send_json(exchange, 400, {"error": "urls or captured_requests required"})
+                    return
+
+                queue_items = []
+                if captured:
+                    for cap in captured:
+                        u_str = cap.get("url") or (urls[0] if urls else "")
+                        pu = urlparse(u_str)
+                        proto = pu.scheme or "https"
+                        host = pu.hostname or ""
+                        port = pu.port or (443 if proto == "https" else 80)
+                        req_raw = self._decode_b64_or_raw(cap.get("request") or "")
+                        resp_raw = self._decode_b64_or_raw(cap.get("response") or "")
+                        if host and req_raw:
+                            self.callbacks.doPassiveScan(host, port, proto == "https",
+                                                         self.helpers.stringToBytes(req_raw),
+                                                         self.helpers.stringToBytes(resp_raw))
+                    kind = "passive_audit"
+                else:
+                    hosts = set()
+                    for u_str in urls:
+                        pu = urlparse(u_str)
+                        if pu.hostname:
+                            hosts.add(pu.hostname.lower())
+                        try:
+                            self.callbacks.includeInScope(URL(u_str))
+                            self.callbacks.sendToSpider(URL(u_str))
+                        except Exception:
+                            pass
+                        proto = pu.scheme or "https"
+                        host = pu.hostname or ""
+                        port = pu.port or (443 if proto == "https" else 80)
+                        path_q = (pu.path or "/") + (("?" + pu.query) if pu.query else "")
+                        raw_req = "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n" % (path_q, host)
+                        if host:
+                            qi = self.callbacks.doActiveScan(host, port, proto == "https", self.helpers.stringToBytes(raw_req))
+                            if qi:
+                                queue_items.append(qi)
+                    for sm in list(self.callbacks.getSiteMap(None) or []):
+                        svc = sm.getHttpService()
+                        if svc and svc.getHost().lower() in hosts and sm.getRequest():
+                            qi = self.callbacks.doActiveScan(svc.getHost(), svc.getPort(), svc.getProtocol() == "https", sm.getRequest())
+                            if qi:
+                                queue_items.append(qi)
+                    kind = "active_audit"
+
+                with self.scan_lock:
+                    tid = str(self.next_scan_id)
+                    self.next_scan_id += 1
+                    self.scans[tid] = {
+                        "id": tid,
+                        "task_id": tid,
+                        "kind": kind,
+                        "urls": urls,
+                        "queue_items": queue_items,
+                        "stopped": False,
+                        "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    }
+                res = {"id": tid, "task_id": tid, "kind": kind, "scan_status": "auditing", "urls": urls, "queued_items": len(queue_items)}
+                exchange.getResponseHeaders().set("Location", "/v0.1/scan/" + tid)
+                self._send_json(exchange, 201, res)
+                return
+
+            if method == "GET" and path == "/v0.1/scan":
+                if not self._is_pro():
+                    self._send_json(exchange, 501, {"error": "Endpoint not supported by Community Bridge"})
+                    return
+                with self.scan_lock:
+                    recs = list(self.scans.values())
+                out = []
+                for rec in recs:
+                    qitems = rec["queue_items"]
+                    done = rec["stopped"] or all(int(q.getPercentageComplete()) >= 100 for q in qitems)
+                    out.append({
+                        "id": rec["id"],
+                        "task_id": rec["id"],
+                        "kind": rec["kind"],
+                        "scan_status": "cancelled" if rec["stopped"] else ("succeeded" if done else "auditing"),
+                        "urls": rec["urls"],
+                        "createdAt": rec["createdAt"],
+                    })
+                self._send_json(exchange, 200, out)
+                return
+
+            if method in ("GET", "DELETE") and path.startswith("/v0.1/scan/"):
+                if not self._is_pro():
+                    self._send_json(exchange, 501, {"error": "Endpoint not supported by Community Bridge"})
+                    return
+                tid = path.rsplit("/", 1)[-1]
+                with self.scan_lock:
+                    rec = self.scans.get(tid)
+                if not rec:
+                    self._send_json(exchange, 404, {"error": "Scan task not found", "task_id": tid})
+                    return
+                if method == "DELETE":
+                    rec["stopped"] = True
+                    for q in rec["queue_items"]:
+                        try:
+                            q.cancel()
+                        except Exception:
+                            pass
+                    self._send_json(exchange, 200, {"stopped": True, "task_id": tid})
+                    return
+                qitems = rec["queue_items"]
+                issues = []
+                reqs_made = 0
+                errs = 0
+                for q in qitems:
+                    reqs_made += int(q.getNumRequests())
+                    errs += int(q.getNumErrors())
+                    for iss in list(q.getIssues() or []):
+                        issues.append(self._serialize_scan_issue(iss))
+                done = rec["stopped"] or all(int(q.getPercentageComplete()) >= 100 for q in qitems)
+                self._send_json(exchange, 200, {
+                    "id": tid,
+                    "task_id": tid,
+                    "kind": rec["kind"],
+                    "scan_status": "cancelled" if rec["stopped"] else ("succeeded" if done else "auditing"),
+                    "audit_requests_made": reqs_made,
+                    "error_count": errs,
+                    "urls": rec["urls"],
+                    "issues": issues,
+                    "issue_events": [{"issue": i} for i in issues],
+                })
+                return
+
+            if method == "GET" and path in ("/v0.1/issue-definitions", "/v0.1/knowledge_base/issue_definitions"):
+                if not self._is_pro():
+                    self._send_json(exchange, 501, {"error": "Endpoint not supported by Community Bridge"})
+                    return
+                seen = {}
+                for iss in list(self.callbacks.getScanIssues(None) or []):
+                    tidx = iss.getIssueType()
+                    if tidx not in seen:
+                        seen[tidx] = {
+                            "type_index": tidx,
+                            "issue_type_id": tidx,
+                            "name": iss.getIssueName() or "Unknown",
+                            "description": iss.getIssueBackground() or "",
+                            "remediation": iss.getRemediationBackground() or "",
+                        }
+                self._send_json(exchange, 200, list(seen.values()))
+                return
+
+            if method == "GET" and path == "/v0.1/scanner/issues":
+                host_f = (query.get("host", [""])[0] or "").lower()
+                sev_f = (query.get("severity", [""])[0] or "").lower()
+                out = []
+                for iss in list(self.callbacks.getScanIssues(None) or []):
+                    m = self._serialize_scan_issue(iss)
+                    if host_f and host_f not in m["host"].lower() and host_f not in m["base_url"].lower():
+                        continue
+                    if sev_f and m["severity"] != sev_f:
+                        continue
+                    out.append(m)
+                self._send_json(exchange, 200, {"count": len(out), "issues": out})
+                return
+
+            if method == "GET" and path == "/v0.1/collaborator/status":
+                if not self._is_pro():
+                    self._send_json(exchange, 501, {"error": "Collaborator requires Burp Suite Pro"})
+                    return
+                ctx = self._ensure_collab()
+                self._send_json(exchange, 200, {"initialized": True, "server_address": ctx.getCollaboratorServerLocation()})
+                return
+
+            if method == "POST" and path == "/v0.1/collaborator/generate":
+                if not self._is_pro():
+                    self._send_json(exchange, 501, {"error": "Collaborator requires Burp Suite Pro"})
+                    return
+                ctx = self._ensure_collab()
+                payload = ctx.generatePayload(True)
+                self._send_json(exchange, 200, {
+                    "payload": payload,
+                    "interaction_id": payload.split(".")[0],
+                    "server": ctx.getCollaboratorServerLocation(),
+                })
+                return
+
+            if method == "GET" and path == "/v0.1/collaborator/interactions":
+                if not self._is_pro():
+                    self._send_json(exchange, 501, {"error": "Collaborator requires Burp Suite Pro"})
+                    return
+                ctx = self._ensure_collab()
+                filter_id = (query.get("interaction_id", [""])[0] or query.get("payload_id", [""])[0]).lower()
+                parsed = []
+                for ix in list(ctx.fetchAllCollaboratorInteractions() or []):
+                    props = dict(ix.getProperties() or {})
+                    ix_id = str(props.get("interaction_id", ""))
+                    if filter_id and ix_id.lower() != filter_id:
+                        continue
+                    parsed.append(props)
+                self._send_json(exchange, 200, {"count": len(parsed), "server": ctx.getCollaboratorServerLocation(), "interactions": parsed})
+                return
+
+            if method == "POST" and path == "/v0.1/intruder":
+                body = self._read_body(exchange)
+                req_container = body.get("request", {})
+                host = body.get("host", "") or (req_container.get("host", "") if isinstance(req_container, dict) else "")
+                port = int(body.get("port") or 443)
+                proto = body.get("protocol") or "https"
+                tmpl = body.get("request_template") or ""
+                if tmpl:
+                    clean_parts = []
+                    offsets = []
+                    i = 0
+                    clean_len = 0
+                    while i < len(tmpl):
+                        op = tmpl.find(u"\u00a7", i)
+                        if op < 0:
+                            clean_parts.append(tmpl[i:])
+                            break
+                        cl = tmpl.find(u"\u00a7", op + 1)
+                        if cl < 0:
+                            clean_parts.append(tmpl[i:])
+                            break
+                        clean_parts.append(tmpl[i:op])
+                        clean_len += (op - i)
+                        start = clean_len
+                        seg = tmpl[op + 1:cl]
+                        clean_parts.append(seg)
+                        clean_len += len(seg)
+                        offsets.append(jarray.array([start, clean_len], "i"))
+                        i = cl + 1
+                    raw_req = "".join(clean_parts)
+                else:
+                    raw_req = self._build_raw_request(req_container, host)
+                    offsets = None
+                if host and raw_req:
+                    self.callbacks.sendToIntruder(host, port, proto == "https", self.helpers.stringToBytes(raw_req), offsets)
+                    self._send_json(exchange, 200, {"sent": True, "host": host, "port": port})
+                else:
+                    self._send_json(exchange, 400, {"error": "host and request required"})
                 return
 
             # ── Repeater UI ───────────────────────────────────
@@ -643,7 +955,7 @@ class BurpExtender(IBurpExtender, IExtensionStateListener):
         self.server.setExecutor(Executors.newFixedThreadPool(4))
         self.server.start()
 
-        self.proxy_ctrl.log("[BurpSuite MCP Bridge v0.2] Listening on http://127.0.0.1:%d (api_key=%s)" % (
+        self.proxy_ctrl.log("[BurpSuite MCP Bridge v0.3] Listening on http://127.0.0.1:%d (api_key=%s)" % (
             port, "configured" if api_key else "disabled"
         ))
 

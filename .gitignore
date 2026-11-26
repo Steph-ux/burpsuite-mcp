@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 *$py.class
 *.log
+burp-extension/montoya-bridge/lib/
+burp-extension/montoya-bridge/build/

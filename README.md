@@ -1,6 +1,6 @@
 # BurpSuite MCP
 
-A **Model Context Protocol (MCP)** server written in TypeScript that exposes **69 tools** across 11 modules to connect MCP-compatible AI clients (Antigravity, OpenCode, Claude Desktop) with **BurpSuite Community Edition** and **BurpSuite Professional** over `stdio` or **Streamable HTTP**.
+A **Model Context Protocol (MCP)** server written in TypeScript that exposes **78 tools** across 12 modules to connect MCP-compatible AI clients (Antigravity, OpenCode, Claude Desktop) with **BurpSuite Community Edition** and **BurpSuite Professional** over `stdio` or **Streamable HTTP**.
 
 ---
 
@@ -11,14 +11,14 @@ A **Model Context Protocol (MCP)** server written in TypeScript that exposes **6
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
   - [1. Build the MCP Server](#1-build-the-mcp-server)
-  - [2. Optional: Load the Community Bridge Extension](#2-optional-load-the-community-bridge-extension)
+  - [2. Load the Full Pro / Community Bridge Extension](#2-load-the-full-pro--community-bridge-extension)
 - [Configuration](#configuration)
 - [Transports: Stdio vs Streamable HTTP](#transports-stdio-vs-streamable-http)
 - [Client Setup](#client-setup)
   - [Antigravity (`agy`)](#antigravity-agy)
   - [OpenCode](#opencode)
   - [Claude Desktop](#claude-desktop)
-- [Available Tools (69)](#available-tools-69)
+- [Available Tools (78)](#available-tools-78)
   - [Proxy (9)](#proxy-9)
   - [Scanner (9)](#scanner-9)
   - [Repeater (6)](#repeater-6)
@@ -30,6 +30,7 @@ A **Model Context Protocol (MCP)** server written in TypeScript that exposes **6
   - [Comparer (3)](#comparer-3)
   - [Report (1)](#report-1)
   - [Session Persistence (3)](#session-persistence-3)
+  - [Pro & Montoya Bridge (9)](#pro--montoya-bridge-9)
 - [Usage Examples](#usage-examples)
 - [Architecture](#architecture)
 - [Troubleshooting](#troubleshooting)
@@ -41,45 +42,40 @@ A **Model Context Protocol (MCP)** server written in TypeScript that exposes **6
 
 `burpsuite-mcp` communicates over `stdio` or **Streamable HTTP** (`--http`) using `@modelcontextprotocol/sdk` and adapts automatically to the BurpSuite edition running locally:
 
-- **Without an API key (BurpSuite Community Edition)**:
+- **BurpSuite Professional + Full Pro Bridge ([`burpsuite-mcp-bridge.jar`](./burp-extension/burpsuite-mcp-bridge.jar) / Montoya Java API)**:
+  - PortSwigger's built-in `:1337` REST API only exposes basic scan tasks and KB definitions. Loading [`burp-extension/burpsuite-mcp-bridge.jar`](./burp-extension/burpsuite-mcp-bridge.jar) (or the Jython bridge [`burp_mcp_bridge.py`](./burp-extension/burp_mcp_bridge.py) v0.3) unlocks **all 78 tools** over `:1337`, including Crawl + Active Audit scans, **Burp Collaborator OAST**, **WebSocket proxy history**, **BChecks** and **Bambda** import, **Intruder UI (`§marker§`)** and **Organizer** integration, live Proxy Intercept & Match/Replace, Sitemap, Scope, and Task Execution Engine control.
+- **BurpSuite Community Edition (Standalone or Jython/Montoya Bridge)**:
   - **Standalone mode** (zero Burp extensions required): routes Repeater, Intruder, and local Spider HTTP/HTTPS traffic through the Burp Proxy (`127.0.0.1:8080`), automatically handles Burp's local MITM TLS certificate, maintains an in-memory proxy history, sitemap, and scope, and performs 11 passive security checks.
-  - **Live GUI Bridge mode** (with the included [`burp-extension/burp_mcp_bridge.py`](./burp-extension/burp_mcp_bridge.py) Jython extension): exposes live Burp Community Proxy History, real-time Proxy Interception (`IProxyListener`), live Match & Replace rules, Target Site Map, Target Scope, Send-to-Repeater UI tabs, and live JSON configuration (`saveConfigAsJson` / `loadConfigFromJson`) on port `1337`.
-- **With or without an API key (BurpSuite Professional)**:
-  - Connects directly to BurpSuite Pro's built-in REST API (`v0.1`).
-  - When `BURP_API_KEY` is configured, `BURP_API_KEY_MODE=auto` targets PortSwigger's native URL-path authentication (`http://<host>:<apiPort>/<key>/v0.1/...`) and automatically falls back to header authentication (`X-Burp-Api-Token`, `API-KEY`, `Authorization`) if a third-party REST plugin is in use.
+  - **Live GUI Bridge mode**: load [`burp-extension/burpsuite-mcp-bridge.jar`](./burp-extension/burpsuite-mcp-bridge.jar) (no Jython needed) or [`burp-extension/burp_mcp_bridge.py`](./burp-extension/burp_mcp_bridge.py) to control live GUI Proxy History, Intercept, Match & Replace, Target Sitemap/Scope, Repeater tabs, and JSON config on port `1337`.
 
 ---
 
 ## Edition Compatibility
 
-| Feature Area | Community (Standalone) | Community + `burp_mcp_bridge.py` | BurpSuite Pro |
+| Feature Area | Community (Standalone) | Community + Bridge | BurpSuite Pro + Montoya Full Pro Bridge |
 |---|---|---|---|
-| Proxy History (`get_proxy_history`, `get_proxy_history_item`) | MCP local history | Live Burp GUI history | Live Burp Pro REST API |
-| Live Proxy Intercept (`set_proxy_intercept`, `get_intercepted_requests`, `forward_intercepted_request`, `drop_intercepted_request`) | Unsupported notice | Live via `IProxyListener` | Live Burp Pro REST API |
-| Proxy Match & Replace (`add/list/delete_proxy_match_replace_rule`) | MCP memory only | Live on all Burp Proxy traffic | Live Burp Pro REST API |
-| Repeater HTTP/HTTPS Replay (`repeater_*`) | Live via Proxy `:8080` | Live via Proxy `:8080` | Live via Proxy `:8080` |
-| Send to Burp Repeater UI (`burp_send_to_repeater`) | Unsupported notice | Live UI tab creation | Live REST API |
-| Intruder Engine (`intruder_*`) | Live via Proxy `:8080` | Live via Proxy `:8080` | Live via Proxy `:8080` |
-| Spider / Discovery (`spider_*`) | Local crawler via Proxy `:8080` | Reads live Burp sitemap + local crawler | Native Burp crawler |
-| Target Sitemap & Technologies (`sitemap_get*`) | MCP local sitemap | Live Burp GUI sitemap | Live Burp Pro REST API |
-| Clear Site Map (`sitemap_clear`) | Clears MCP local cache | Clears MCP local cache (GUI clear is manual) | Native API if supported |
-| Scope Management (`scope_*`) | MCP local scope | Live `include`/`exclude`/`check` in Burp GUI | Live Burp Pro REST API |
-| **Passive Security Analysis** (`start_passive_scan`, `get_all_issues`, `get_issues_for_host`) | 11 local passive checks | 11 passive checks on live Burp sitemap | Native Burp passive audit |
-| **Decoder & Comparer** (`decoder_*`, `comparer_*`) | Full local encoding/decoding/hashing & text/HTTP diff | Full local tools + live Proxy item diffing | Full local tools + live Proxy item diffing |
-| **Audit Report Export** (`report_export`) | Markdown/JSON from local cache & passive checks | Markdown/JSON from live sitemap & passive checks | Markdown/JSON from Pro findings & sitemap |
-| **Active Scanner** (`start_scan`, `get_scan_status`, `get_scan_issues`, `stop_scan`, `list_scans`) | Unsupported notice | Unsupported notice | Native Burp Pro scanner |
-| Burp Configuration (`burp_get_configuration`, `burp_update_configuration`) | Unsupported notice | Live (`saveConfigAsJson` / `loadConfigFromJson`) | Live Burp Pro REST API |
-| Save Project State (`burp_save_state`) | Unsupported (Pro only) | Unsupported (Pro only) | Live Burp Pro REST API |
+| Proxy History & WebSockets (`get_proxy_history*`, `proxy_get_websockets`) | MCP local HTTP history | Live GUI HTTP (+ WebSockets in JAR) | Live Pro HTTP + WebSocket history |
+| Live Proxy Intercept (`set_proxy_intercept`, `get/forward/drop_intercepted_request`) | Unsupported notice | Live queue + modify/drop | Live queue + modify/drop |
+| Proxy Match & Replace (`add/list/delete_proxy_match_replace_rule`) | MCP memory only | Live on all Burp Proxy traffic | Live on all Burp Proxy traffic |
+| Repeater, Intruder & Organizer UI (`repeater_*`, `burp_send_to_*`, `organizer_list_items`) | Replay via `:8080` | Live Repeater & Organizer/Intruder | Full Repeater, Intruder (`§marker§`), Organizer |
+| Spider / Discovery (`spider_*`) | Local crawler via `:8080` | Local crawler + live sitemap | Native Burp Crawl Engine |
+| Target Sitemap & Scope (`sitemap_*`, `scope_*`) | MCP local sitemap & scope | Live GUI sitemap & scope | Live Pro sitemap (+ issues) & scope |
+| **Active & Passive Scanner** (`start_scan`, `get_scan_*`, `get_all_issues`, `scanner_import_bcheck`) | 11 local passive checks | 11 passive checks on live sitemap | Full Active Audit, Crawl+Audit, BChecks & Pro Issues |
+| **Burp Collaborator OAST** (`collaborator_generate_payload`, `collaborator_poll_interactions`) | Pro only | Pro only | Native Collaborator DNS/HTTP/SMTP polling |
+| **Bambda & Task Engine** (`burp_import_bambda`, `burp_task_engine`) | Montoya JAR only | Supported (Montoya JAR) | Live Bambda import & Pause/Resume engine |
+| **Decoder, Comparer & Report** (`decoder_*`, `comparer_*`, `report_export`) | Full local tools & passive report | Full tools + live sitemap report | Full tools + Pro findings Markdown/JSON report |
+| Burp Configuration (`burp_get_configuration`, `burp_update_configuration`) | Unsupported notice | Live JSON export/import | Live project options JSON export/import |
 | MCP Session Persistence (`session_save`, `session_load`, `session_info`) | Full JSON save/restore of MCP state | Full JSON save/restore + live Burp sync | Full JSON save/restore + live Burp sync |
-| Extensions Management (`extensions_*`) | Unsupported notice | Bridge self-info, logs, and unload | Live Burp Pro REST API |
+| Extensions Management (`extensions_*`) | Unsupported notice | Bridge info, logs, and unload | Bridge info, logs, and unload |
 
 ---
 
 ## Prerequisites
 
 - **Node.js** v18 or later (tested on Node.js v24)
-- **BurpSuite Community Edition** or **BurpSuite Professional**
-- *(Optional, for Community GUI integration)* **Jython standalone JAR** configured in Burp under `Settings -> Extensions -> Python environment`
+- **BurpSuite Professional** (recommended for Active Scanner, Collaborator OAST, Crawl+Audit, BChecks) or **BurpSuite Community Edition**
+- **JDK 21+** *(only if recompiling `burp-extension/montoya-bridge/` from source; pre-built `burp-extension/burpsuite-mcp-bridge.jar` is included)*
+- *(Optional, only for `burp_mcp_bridge.py`)* **Jython standalone JAR** configured in `Settings -> Extensions -> Python environment`
 
 ---
 
@@ -101,18 +97,22 @@ npm run dev
 npm test
 ```
 
-### 2. Optional: Load the Community Bridge Extension
+### 2. Load the Full Pro / Community Bridge Extension
 
-If you are using **BurpSuite Community Edition** and want the MCP server to read your live GUI Proxy History/Sitemap, toggle real-time interception, apply Match & Replace rules to browser traffic, open Repeater UI tabs, and read/update Burp JSON configuration:
+**Option A — Recommended: Montoya Full Pro Bridge JAR (Burp Pro & Community, zero Jython required)**
 
-1. In BurpSuite Community, go to **Extensions -> Extensions settings -> Python environment** and select your Jython standalone `.jar` file.
-2. Go to **Extensions -> Installed -> Add**:
-   - **Extension type**: `Python`
-   - **Extension file**: select `burp-extension/burp_mcp_bridge.py`
+1. Unload any older bridge or disable Burp's built-in `:1337` REST API if running on the same port.
+2. In BurpSuite, go to **Extensions -> Installed -> Add**:
+   - **Extension type**: `Java`
+   - **Extension file**: select `burp-extension/burpsuite-mcp-bridge.jar` (or rebuild it with `./burp-extension/montoya-bridge/build.sh`)
 3. Click **Next**. The Output tab should display:
-   `[BurpSuite MCP Bridge v0.2] Listening on http://127.0.0.1:1337 (api_key=disabled)`
+   `[BurpSuite MCP Full Pro Bridge (Montoya) v1.0.0] Listening on http://127.0.0.1:1337 (edition=PROFESSIONAL, api_key=disabled)`
 
-If you later upgrade to **BurpSuite Professional**, unload `burp_mcp_bridge.py`, enable Burp Pro's native REST API (`Settings -> Suite -> REST API -> Service enabled`), and set `BURP_API_KEY`.
+**Option B — Python Jython Bridge (`burp-extension/burp_mcp_bridge.py` v0.3)**
+
+1. Configure your Jython standalone `.jar` under **Extensions -> Extensions settings -> Python environment**.
+2. Go to **Extensions -> Installed -> Add** (`Extension type: Python`, select `burp-extension/burp_mcp_bridge.py`).
+3. Supports live Proxy/Sitemap/Scope/Repeater in Community plus Active Scan, Collaborator OAST, and Intruder UI in Pro.
 
 ---
 
@@ -230,7 +230,7 @@ A template is provided in [`claude_desktop_config.json`](./claude_desktop_config
 
 ---
 
-## Available Tools (69)
+## Available Tools (78)
 
 ### Proxy (9)
 
@@ -356,9 +356,43 @@ A template is provided in [`claude_desktop_config.json`](./claude_desktop_config
 | `session_save` | Export MCP/Community session state (proxy history, scope, rules, passive issues, Repeater history) to a JSON file |
 | `session_load` | Restore a saved JSON session into memory (`merge` option) and sync scope/rules to Burp if reachable |
 
+### Pro & Montoya Bridge (9)
+
+| Tool | Description |
+|---|---|
+| `collaborator_generate_payload` | Generate a Burp Collaborator OAST domain/payload (`custom_data`, `secret_key`) |
+| `collaborator_poll_interactions` | Poll Burp Collaborator for received DNS, HTTP, and SMTP out-of-band interactions |
+| `burp_send_to_intruder` | Send a proxy item or raw `request_template` with `§marker§` positions to Burp Intruder UI |
+| `burp_send_to_organizer` | Send a proxy item or custom request/response to Burp Suite Organizer |
+| `organizer_list_items` | List items currently stored in Burp Suite Organizer with status and notes |
+| `proxy_get_websockets` | Retrieve WebSocket frames captured by Burp Proxy (`limit`, `filter`, `direction`) |
+| `scanner_import_bcheck` | Import a custom BCheck scan script directly into Burp Pro's Scanner |
+| `burp_import_bambda` | Import a Bambda filter/custom-action script into Burp Suite |
+| `burp_task_engine` | Inspect or set Burp Suite's global Task Execution Engine (`RUNNING` / `PAUSED`) |
+
 ---
 
 ## Usage Examples
+
+### Generate & Poll Burp Collaborator OAST Payloads (Burp Pro)
+
+```json
+// 1. Generate payload for out-of-band SSRF / Blind XXE
+collaborator_generate_payload({ "custom_data": "ssrf-probe-1" })
+
+// 2. Poll DNS / HTTP / SMTP interactions
+collaborator_poll_interactions({ "interaction_id": "<interaction_id>" })
+```
+
+### Send Marked Insertion Points to Burp Intruder UI & Import a BCheck
+
+```json
+burp_send_to_intruder({
+  "url": "https://example.com/search",
+  "request_template": "GET /search?q=§probe§ HTTP/1.1\r\nHost: example.com\r\n\r\n",
+  "tab_name": "Search Fuzz"
+})
+```
 
 ### Export a Defensive Audit Report
 
@@ -446,20 +480,20 @@ get_scan_issues({ "task_id": "1" })
 +---------------------------------+---------------------------------+
                                   | MCP JSON-RPC (stdio or --http)
 +---------------------------------v---------------------------------+
-|                     src/index.ts (69 tools)                       |
+|                     src/index.ts (78 tools)                       |
 |  +---------+ +---------+ +----------+ +----------+ +----------+   |
 |  |  proxy  | | scanner | | repeater | | intruder | |  spider  |   |
 |  +---------+ +---------+ +----------+ +----------+ +----------+   |
 |  +-----------+ +------------+ +---------+ +----------+ +--------+ |
 |  |  sitemap  | | extensions | | decoder | | comparer | | report | |
 |  +-----------+ +------------+ +---------+ +----------+ +--------+ |
-|  +-----------+                                                    |
-|  |  session  |  src/utils/local-store.ts & src/utils/burp-client  |
-|  +-----------+                                                    |
+|  +-----------+ +-----+                                            |
+|  |  session  | | pro |  src/utils/local-store.ts & burp-client    |
+|  +-----------+ +-----+                                            |
 +------------------------+-----------------------+------------------+
                          | REST (:1337)          | HTTP Proxy (:8080)
 +------------------------v-----------------------v------------------+
-|   BurpSuite Pro REST API  OR  Burp Community + burp_mcp_bridge.py |
+|  Montoya Pro Bridge JAR (recommended) OR Jython bridge / Pro API  |
 +-------------------------------------------------------------------+
 ```
 
@@ -470,9 +504,10 @@ get_scan_issues({ "task_id": "1" })
 
 ## Troubleshooting
 
-- **`scope_get` or `get_all_issues` returns Community local data instead of Burp GUI data**: ensure `burp-extension/burp_mcp_bridge.py` v0.2 is loaded in Burp (`Extensions -> Installed`) and listening on `127.0.0.1:1337`.
+- **`scope_get` or `get_all_issues` returns Community local data instead of Burp GUI data**: ensure `burp-extension/burpsuite-mcp-bridge.jar` (or `burp_mcp_bridge.py` v0.3) is loaded in Burp (`Extensions -> Installed`) and listening on `127.0.0.1:1337`.
+- **Collaborator, BChecks, WebSockets, or Organizer report `pro-bridge-required`**: load the Montoya Java bridge `burp-extension/burpsuite-mcp-bridge.jar` in BurpSuite Pro (`Extensions -> Installed -> Add -> Java`). PortSwigger's built-in `:1337` REST API alone does not expose these endpoints.
 - **HTTPS requests in Repeater or Intruder fail with TLS certificate errors**: verify `BURP_PROXY_TLS_REJECT_UNAUTHORIZED` is `false` (default) when routing through Burp's intercepting proxy.
-- **Upgrading from Community to Pro**: unload `burp_mcp_bridge.py` in Burp, enable the built-in Pro REST API on port `1337`, and set `BURP_API_KEY` in `.env` or your MCP client config.
+- **Upgrading from Community to Pro**: load `burp-extension/burpsuite-mcp-bridge.jar` (recommended) or `burp_mcp_bridge.py` v0.3 in BurpSuite Pro on port `1337`; if using PortSwigger's built-in REST API instead, set `BURP_API_KEY` in `.env` or your MCP client config.
 
 ---
 

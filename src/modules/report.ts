@@ -8,7 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { type BurpClient, getBurpClient } from "../utils/burp-client.js";
 import { detectTechnologies, fetchSiteMapEntries } from "./sitemap.js";
-import { analyzeCommunityLiveSitemap } from "./scanner.js";
+import { analyzeCommunityLiveSitemap, fetchBridgeScannerIssues, fetchIssueDefinitionsMap } from "./scanner.js";
 
 interface ReportFinding {
   name: string;
@@ -39,19 +39,10 @@ async function collectFindings(
 ): Promise<{ mode: string; findings: ReportFinding[] }> {
   return client.withRestFallback(
     async () => {
-      const [defsRes, sitemapRes] = await Promise.all([
-        client.get("/v0.1/issue-definitions"),
+      const [{ definitions }, sitemapRes] = await Promise.all([
+        fetchIssueDefinitionsMap(client),
         client.get(host ? `/v0.1/target/sitemap?host=${encodeURIComponent(host)}` : "/v0.1/target/sitemap"),
       ]);
-
-      const definitions: Record<number, Record<string, unknown>> = {};
-      const rawDefs = Array.isArray(defsRes)
-        ? defsRes
-        : ((defsRes as Record<string, unknown>)?.issue_definitions ?? []);
-      for (const def of rawDefs as Record<string, unknown>[]) {
-        const idx = def.type_index ?? def.issue_type_id;
-        if (idx !== undefined) definitions[idx as number] = def;
-      }
 
       const nodes = Array.isArray(sitemapRes)
         ? (sitemapRes as Record<string, unknown>[])
@@ -73,6 +64,19 @@ async function collectFindings(
             path: String(issue.path ?? node.path ?? "/"),
             description: String(issue.description ?? issue.detail ?? def?.description ?? ""),
             remediation: String(issue.remediation ?? issue.recommendation ?? def?.remediation ?? ""),
+          });
+        }
+      }
+      if (findings.length === 0) {
+        for (const issue of await fetchBridgeScannerIssues(client, host)) {
+          findings.push({
+            name: issue.name,
+            severity: String(issue.severity).toLowerCase(),
+            confidence: String(issue.confidence).toLowerCase(),
+            host: issue.host,
+            path: issue.path,
+            description: issue.description,
+            remediation: issue.remediation,
           });
         }
       }
