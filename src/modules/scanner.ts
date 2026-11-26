@@ -70,7 +70,7 @@ function parseHttpResponseText(raw: string): {
   return { statusCode, headers, body };
 }
 
-async function analyzeCommunityLiveSitemap(
+export async function analyzeCommunityLiveSitemap(
   burpClient: BurpClient,
   host?: string
 ): Promise<{ mode: string; count: number; issues: ReturnType<typeof getLocalPassiveIssues> }> {

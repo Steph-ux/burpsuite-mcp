@@ -64,7 +64,7 @@ interface BurpScopeEntry {
  * Extract the technology stack from response headers collected in the sitemap.
  * Returns a de-duplicated map: technology_name → evidence string.
  */
-function detectTechnologies(
+export function detectTechnologies(
   entries: BurpSiteMapEntry[]
 ): Record<string, string[]> {
   const tech: Record<string, Set<string>> = {};
@@ -124,7 +124,7 @@ function detectTechnologies(
   );
 }
 
-async function fetchSiteMapEntries(
+export async function fetchSiteMapEntries(
   client: BurpClient,
   host?: string
 ): Promise<{ mode: "burp-rest-api" | "community-local"; entries: BurpSiteMapEntry[] }> {

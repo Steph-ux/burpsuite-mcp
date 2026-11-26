@@ -1,6 +1,6 @@
 # BurpSuite MCP
 
-A **Model Context Protocol (MCP)** server written in TypeScript that exposes **65 tools** across 9 modules to connect MCP-compatible AI clients (Antigravity, OpenCode, Claude Desktop) with **BurpSuite Community Edition** and **BurpSuite Professional**.
+A **Model Context Protocol (MCP)** server written in TypeScript that exposes **66 tools** across 10 modules to connect MCP-compatible AI clients (Antigravity, OpenCode, Claude Desktop) with **BurpSuite Community Edition** and **BurpSuite Professional** over `stdio` or **Streamable HTTP**.
 
 ---
 
@@ -13,11 +13,12 @@ A **Model Context Protocol (MCP)** server written in TypeScript that exposes **6
   - [1. Build the MCP Server](#1-build-the-mcp-server)
   - [2. Optional: Load the Community Bridge Extension](#2-optional-load-the-community-bridge-extension)
 - [Configuration](#configuration)
+- [Transports: Stdio vs Streamable HTTP](#transports-stdio-vs-streamable-http)
 - [Client Setup](#client-setup)
   - [Antigravity (`agy`)](#antigravity-agy)
   - [OpenCode](#opencode)
   - [Claude Desktop](#claude-desktop)
-- [Available Tools (65)](#available-tools-65)
+- [Available Tools (66)](#available-tools-66)
   - [Proxy (9)](#proxy-9)
   - [Scanner (9)](#scanner-9)
   - [Repeater (6)](#repeater-6)
@@ -27,6 +28,7 @@ A **Model Context Protocol (MCP)** server written in TypeScript that exposes **6
   - [Extensions & Core (12)](#extensions--core-12)
   - [Decoder (3)](#decoder-3)
   - [Comparer (3)](#comparer-3)
+  - [Report (1)](#report-1)
 - [Usage Examples](#usage-examples)
 - [Architecture](#architecture)
 - [Troubleshooting](#troubleshooting)
@@ -35,7 +37,7 @@ A **Model Context Protocol (MCP)** server written in TypeScript that exposes **6
 
 ## Overview
 
-`burpsuite-mcp` communicates over `stdio` using `@modelcontextprotocol/sdk` and adapts automatically to the BurpSuite edition running locally:
+`burpsuite-mcp` communicates over `stdio` or **Streamable HTTP** (`--http`) using `@modelcontextprotocol/sdk` and adapts automatically to the BurpSuite edition running locally:
 
 - **Without an API key (BurpSuite Community Edition)**:
   - **Standalone mode** (zero Burp extensions required): routes Repeater, Intruder, and local Spider HTTP/HTTPS traffic through the Burp Proxy (`127.0.0.1:8080`), automatically handles Burp's local MITM TLS certificate, maintains an in-memory proxy history, sitemap, and scope, and performs 11 passive security checks.
@@ -62,6 +64,7 @@ A **Model Context Protocol (MCP)** server written in TypeScript that exposes **6
 | Scope Management (`scope_*`) | MCP local scope | Live `include`/`exclude`/`check` in Burp GUI | Live Burp Pro REST API |
 | **Passive Security Analysis** (`start_passive_scan`, `get_all_issues`, `get_issues_for_host`) | 11 local passive checks | 11 passive checks on live Burp sitemap | Native Burp passive audit |
 | **Decoder & Comparer** (`decoder_*`, `comparer_*`) | Full local encoding/decoding/hashing & text/HTTP diff | Full local tools + live Proxy item diffing | Full local tools + live Proxy item diffing |
+| **Audit Report Export** (`report_export`) | Markdown/JSON from local cache & passive checks | Markdown/JSON from live sitemap & passive checks | Markdown/JSON from Pro findings & sitemap |
 | **Active Scanner** (`start_scan`, `get_scan_status`, `get_scan_issues`, `stop_scan`, `list_scans`) | Unsupported notice | Unsupported notice | Native Burp Pro scanner |
 | Burp Configuration (`burp_get_configuration`, `burp_update_configuration`) | Unsupported notice | Live (`saveConfigAsJson` / `loadConfigFromJson`) | Live Burp Pro REST API |
 | Save Project State (`burp_save_state`) | Unsupported (Pro only) | Unsupported (Pro only) | Live Burp Pro REST API |
@@ -127,6 +130,28 @@ cp .env.example .env
 | `BURP_EDITION` | `auto` | `auto` (REST when `:1337` is reachable, local fallback otherwise), `community`, or `pro` |
 | `BURP_PROXY_TLS_REJECT_UNAUTHORIZED` | `false` | Set to `true` only if Burp's CA certificate is installed in Node's trust store |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` (all logs are written exclusively to `stderr`) |
+| `MCP_TRANSPORT` | `stdio` | Transport mode (`stdio` or `http`) |
+| `MCP_HTTP_HOST` | `127.0.0.1` | Bind address for Streamable HTTP mode |
+| `MCP_HTTP_PORT` | `3000` | Listen port for Streamable HTTP mode |
+| `MCP_HTTP_TOKEN` | `""` | Optional Bearer token required on HTTP `/mcp` requests |
+
+---
+
+## Transports: Stdio vs Streamable HTTP
+
+By default, `burpsuite-mcp` runs over `stdio`. To run as a stateful **Streamable HTTP** MCP server (for example, when BurpSuite runs inside a separate VM or remote workstation):
+
+```bash
+npm run start:http
+# or with custom bind host, port, and Bearer token:
+node dist/index.js --http --host 127.0.0.1 --port 3000 --token your-secret-token
+```
+
+Exposed HTTP endpoints:
+- `POST /mcp`, `GET /mcp`, `DELETE /mcp` — MCP Streamable HTTP transport (`Mcp-Session-Id` stateful sessions)
+- `GET /health` — JSON health check returning tool count and active session count
+
+If `--token` (`MCP_HTTP_TOKEN`) is configured, clients must pass `Authorization: Bearer <token>`.
 
 ---
 
@@ -201,7 +226,7 @@ A template is provided in [`claude_desktop_config.json`](./claude_desktop_config
 
 ---
 
-## Available Tools (65)
+## Available Tools (66)
 
 ### Proxy (9)
 
@@ -313,9 +338,26 @@ A template is provided in [`claude_desktop_config.json`](./claude_desktop_config
 | `comparer_diff_proxy_items` | Diff status codes, response headers, and bodies for two Proxy History items by `left_id` and `right_id` |
 | `comparer_diff_repeater_items` | Diff status codes, response headers, and bodies for two Repeater items by UUID |
 
+### Report (1)
+
+| Tool | Description |
+|---|---|
+| `report_export` | Generate a structured Markdown or JSON defensive audit report (hosts, endpoints, technologies, findings with remediation) and optionally save to `output_path` |
+
 ---
 
 ## Usage Examples
+
+### Export a Defensive Audit Report
+
+```json
+report_export({
+  "host": "example.com",
+  "format": "markdown",
+  "include_endpoints": true,
+  "output_path": "./audit-report.md"
+})
+```
 
 ### Decode a JWT and Diff Two Proxy Responses
 
@@ -390,15 +432,15 @@ get_scan_issues({ "task_id": "1" })
 +-------------------------------------------------------------------+
 |      MCP Client (Antigravity / OpenCode / Claude Desktop)         |
 +---------------------------------+---------------------------------+
-                                  | MCP JSON-RPC over stdio
+                                  | MCP JSON-RPC (stdio or --http)
 +---------------------------------v---------------------------------+
-|                     src/index.ts (65 tools)                       |
+|                     src/index.ts (66 tools)                       |
 |  +---------+ +---------+ +----------+ +----------+ +----------+   |
 |  |  proxy  | | scanner | | repeater | | intruder | |  spider  |   |
 |  +---------+ +---------+ +----------+ +----------+ +----------+   |
-|  +-----------+ +------------+ +---------+ +----------+          |
-|  |  sitemap  | | extensions | | decoder | | comparer |          |
-|  +-----------+ +------------+ +---------+ +----------+          |
+|  +-----------+ +------------+ +---------+ +----------+ +--------+ |
+|  |  sitemap  | | extensions | | decoder | | comparer | | report | |
+|  +-----------+ +------------+ +---------+ +----------+ +--------+ |
 |                     src/utils/local-store.ts                      |
 |                     src/utils/burp-client.ts                      |
 +------------------------+-----------------------+------------------+
