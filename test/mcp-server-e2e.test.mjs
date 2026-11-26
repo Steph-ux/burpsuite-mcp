@@ -149,8 +149,8 @@ describe("MCP server end-to-end (stdio & Streamable HTTP)", () => {
 
     const list = await mcp.rpc("tools/list", {});
     const tools = list.result.tools;
-    assert.equal(tools.length, 66);
-    assert.equal(new Set(tools.map((t) => t.name)).size, 66);
+    assert.equal(tools.length, 69);
+    assert.equal(new Set(tools.map((t) => t.name)).size, 69);
     for (const t of tools) {
       assert.equal(t.inputSchema.type, "object", `${t.name} must have object schema`);
     }
@@ -252,6 +252,7 @@ describe("MCP server end-to-end (stdio & Streamable HTTP)", () => {
     assert.equal(atkRes.total_filtered, 2);
 
     const tmpOut = path.join(os.tmpdir(), `burp-mcp-e2e-${Date.now()}.md`);
+    const tmpSession = path.join(os.tmpdir(), `burp-mcp-session-${Date.now()}.json`);
     try {
       const rep = parseTool(
         await mcp.rpc("tools/call", {
@@ -261,13 +262,56 @@ describe("MCP server end-to-end (stdio & Streamable HTTP)", () => {
       );
       assert.ok(rep.summary.findings >= 3);
       assert.ok(fs.existsSync(tmpOut));
+
+      await mcp.rpc("tools/call", {
+        name: "scope_add_url",
+        arguments: { url: `http://127.0.0.1:${targetPort}/` },
+      });
+      const info1 = parseTool(
+        await mcp.rpc("tools/call", { name: "session_info", arguments: {} })
+      );
+      assert.ok(info1.proxy_history_count >= 2);
+      assert.equal(info1.repeater_history_count, 2);
+
+      const saved = parseTool(
+        await mcp.rpc("tools/call", {
+          name: "session_save",
+          arguments: { file_path: tmpSession },
+        })
+      );
+      assert.equal(saved.saved, true);
+      assert.ok(fs.existsSync(tmpSession));
+
+      // Load into a brand-new MCP stdio process and confirm state survives restart
+      const mcp2 = await startStdioMcp({
+        BURP_HOST: "127.0.0.1",
+        BURP_PORT: String(proxyPort),
+        BURP_API_PORT: String(closedRestPort),
+        BURP_API_KEY: "",
+        BURP_EDITION: "auto",
+      });
+      const loaded = parseTool(
+        await mcp2.rpc("tools/call", {
+          name: "session_load",
+          arguments: { file_path: tmpSession },
+        })
+      );
+      assert.equal(loaded.loaded, true);
+      assert.equal(loaded.repeater_history_loaded, 2);
+      const info2 = parseTool(
+        await mcp2.rpc("tools/call", { name: "session_info", arguments: {} })
+      );
+      assert.equal(info2.proxy_history_count, info1.proxy_history_count);
+      assert.equal(info2.scope_included_count, 1);
+      assert.ok(info2.passive_issues_count >= 3);
     } finally {
       if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut);
+      if (fs.existsSync(tmpSession)) fs.unlinkSync(tmpSession);
     }
 
     assert.ok(proxyHits >= 4);
     assert.equal(mcp.getOut().trim(), "");
-    assert.ok(mcp.getErr().includes("Registered 66 tools"));
+    assert.ok(mcp.getErr().includes("Registered 69 tools"));
   });
 
   it("supports Burp Pro path API key mode over stdio", async () => {
@@ -362,7 +406,7 @@ describe("MCP server end-to-end (stdio & Streamable HTTP)", () => {
     const health = await fetch(`http://127.0.0.1:${httpPort}/health`);
     assert.equal(health.status, 200);
     const healthJson = await health.json();
-    assert.equal(healthJson.tools, 66);
+    assert.equal(healthJson.tools, 69);
 
     const unauth = await fetch(`http://127.0.0.1:${httpPort}/mcp`, {
       method: "POST",
@@ -385,7 +429,7 @@ describe("MCP server end-to-end (stdio & Streamable HTTP)", () => {
     await client.connect(transport);
 
     const list = await client.listTools();
-    assert.equal(list.tools.length, 66);
+    assert.equal(list.tools.length, 69);
 
     const hashRes = await client.callTool({
       name: "decoder_hash",

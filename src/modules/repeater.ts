@@ -82,6 +82,28 @@ export function getRepeaterEntry(id: string): RepeaterEntry | undefined {
   return repeaterHistory.get(id);
 }
 
+export function exportRepeaterHistory(): RepeaterEntry[] {
+  return Array.from(repeaterHistory.values()).map((e) => ({ ...e }));
+}
+
+export function importRepeaterHistory(
+  entries: RepeaterEntry[],
+  merge = false
+): number {
+  if (!merge) {
+    repeaterHistory.clear();
+  }
+  let loaded = 0;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || !entry.id || !entry.request) {
+      continue;
+    }
+    repeaterHistory.set(entry.id, { ...entry });
+    loaded++;
+  }
+  return loaded;
+}
+
 // ---------------------------------------------------------------------------
 // Core send helper
 // ---------------------------------------------------------------------------

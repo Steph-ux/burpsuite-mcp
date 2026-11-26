@@ -35,6 +35,7 @@ import { EXTENSIONS_TOOLS } from "./modules/extensions.js";
 import { DECODER_TOOLS } from "./modules/decoder.js";
 import { COMPARER_TOOLS } from "./modules/comparer.js";
 import { REPORT_TOOLS } from "./modules/report.js";
+import { SESSION_TOOLS } from "./modules/session.js";
 
 // ── Tool shape ────────────────────────────────────────────────────────────────
 
@@ -60,6 +61,7 @@ const ALL_TOOLS: McpTool[] = [
   ...DECODER_TOOLS,
   ...COMPARER_TOOLS,
   ...REPORT_TOOLS,
+  ...SESSION_TOOLS,
 ];
 
 /** Fast lookup: tool name → handler entry */
@@ -486,7 +488,7 @@ async function main(): Promise<void> {
     `BurpSuite MCP starting – proxy=${config.host}:${config.port}, rest=${config.host}:${config.apiPort}, edition=${config.edition}, ${authLabel}`
   );
   logger.info(
-    `Registered ${ALL_TOOLS.length} tools across 10 modules (proxy:9, scanner:9, repeater:6, intruder:6, spider:7, sitemap:10, extensions:12, decoder:3, comparer:3, report:1)`
+    `Registered ${ALL_TOOLS.length} tools across 11 modules (proxy:9, scanner:9, repeater:6, intruder:6, spider:7, sitemap:10, extensions:12, decoder:3, comparer:3, report:1, session:3)`
   );
 
   if (cli.transport === "http") {

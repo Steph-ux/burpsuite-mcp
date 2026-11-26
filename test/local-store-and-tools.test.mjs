@@ -9,10 +9,12 @@ import {
   clearLocalSiteMap,
   deleteLocalMatchReplaceRule,
   excludeLocalScopeUrl,
+  exportLocalStoreSnapshot,
   getLocalHistory,
   getLocalHistoryItem,
   getLocalScope,
   getLocalSiteMap,
+  importLocalStoreSnapshot,
   isLocalUrlInScope,
   listLocalMatchReplaceRules,
   recordLocalExchange,
@@ -164,5 +166,52 @@ describe("Local Community store & passive analyzer", () => {
 
     clearLocalSiteMap("unit.local");
     assert.equal(getLocalSiteMap("unit.local").length, 0);
+  });
+
+  it("exports and re-imports full store snapshots cleanly", () => {
+    clearLocalSiteMap();
+    setLocalScope(["https://snap.local/"], ["https://snap.local/admin"]);
+    const rec = recordLocalExchange({
+      source: "repeater",
+      proxied: false,
+      protocol: "https",
+      host: "snap.local",
+      port: 443,
+      path: "/",
+      request: { method: "GET", url: "https://snap.local/", headers: {} },
+      response: {
+        statusCode: 200,
+        statusMessage: "OK",
+        headers: { "content-type": "text/html" },
+        body: "<html>ok</html>",
+        mimeType: "text/html",
+        responseTime: 5,
+      },
+    });
+    const rule = addLocalMatchReplaceRule({
+      rule_type: "request_header",
+      match: "X-Old: 1",
+      replace: "X-Old: 2",
+      is_simple_match: true,
+      enabled: true,
+      comment: "snap",
+    });
+
+    const snap = exportLocalStoreSnapshot();
+    assert.equal(snap.proxy_history.length, 1);
+    assert.equal(snap.scope.included.length, 1);
+    assert.equal(snap.match_replace_rules.length >= 1, true);
+
+    clearLocalSiteMap();
+    setLocalScope([], []);
+    deleteLocalMatchReplaceRule(rule.id);
+
+    const imported = importLocalStoreSnapshot(snap, false);
+    assert.equal(imported.proxy_history_loaded, 1);
+    assert.equal(imported.scope_included_loaded, 1);
+    assert.equal(imported.scope_excluded_loaded, 1);
+    assert.equal(getLocalHistoryItem(rec.id)?.host, "snap.local");
+    assert.equal(isLocalUrlInScope("https://snap.local/app"), true);
+    assert.equal(isLocalUrlInScope("https://snap.local/admin"), false);
   });
 });

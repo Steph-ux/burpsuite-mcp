@@ -1,6 +1,6 @@
 # BurpSuite MCP
 
-A **Model Context Protocol (MCP)** server written in TypeScript that exposes **66 tools** across 10 modules to connect MCP-compatible AI clients (Antigravity, OpenCode, Claude Desktop) with **BurpSuite Community Edition** and **BurpSuite Professional** over `stdio` or **Streamable HTTP**.
+A **Model Context Protocol (MCP)** server written in TypeScript that exposes **69 tools** across 11 modules to connect MCP-compatible AI clients (Antigravity, OpenCode, Claude Desktop) with **BurpSuite Community Edition** and **BurpSuite Professional** over `stdio` or **Streamable HTTP**.
 
 ---
 
@@ -18,7 +18,7 @@ A **Model Context Protocol (MCP)** server written in TypeScript that exposes **6
   - [Antigravity (`agy`)](#antigravity-agy)
   - [OpenCode](#opencode)
   - [Claude Desktop](#claude-desktop)
-- [Available Tools (66)](#available-tools-66)
+- [Available Tools (69)](#available-tools-69)
   - [Proxy (9)](#proxy-9)
   - [Scanner (9)](#scanner-9)
   - [Repeater (6)](#repeater-6)
@@ -29,6 +29,7 @@ A **Model Context Protocol (MCP)** server written in TypeScript that exposes **6
   - [Decoder (3)](#decoder-3)
   - [Comparer (3)](#comparer-3)
   - [Report (1)](#report-1)
+  - [Session Persistence (3)](#session-persistence-3)
 - [Usage Examples](#usage-examples)
 - [Architecture](#architecture)
 - [Troubleshooting](#troubleshooting)
@@ -69,6 +70,7 @@ A **Model Context Protocol (MCP)** server written in TypeScript that exposes **6
 | **Active Scanner** (`start_scan`, `get_scan_status`, `get_scan_issues`, `stop_scan`, `list_scans`) | Unsupported notice | Unsupported notice | Native Burp Pro scanner |
 | Burp Configuration (`burp_get_configuration`, `burp_update_configuration`) | Unsupported notice | Live (`saveConfigAsJson` / `loadConfigFromJson`) | Live Burp Pro REST API |
 | Save Project State (`burp_save_state`) | Unsupported (Pro only) | Unsupported (Pro only) | Live Burp Pro REST API |
+| MCP Session Persistence (`session_save`, `session_load`, `session_info`) | Full JSON save/restore of MCP state | Full JSON save/restore + live Burp sync | Full JSON save/restore + live Burp sync |
 | Extensions Management (`extensions_*`) | Unsupported notice | Bridge self-info, logs, and unload | Live Burp Pro REST API |
 
 ---
@@ -228,7 +230,7 @@ A template is provided in [`claude_desktop_config.json`](./claude_desktop_config
 
 ---
 
-## Available Tools (66)
+## Available Tools (69)
 
 ### Proxy (9)
 
@@ -346,6 +348,14 @@ A template is provided in [`claude_desktop_config.json`](./claude_desktop_config
 |---|---|
 | `report_export` | Generate a structured Markdown or JSON defensive audit report (hosts, endpoints, technologies, findings with remediation) and optionally save to `output_path` |
 
+### Session Persistence (3)
+
+| Tool | Description |
+|---|---|
+| `session_info` | Inspect current in-memory session counts and REST/bridge connectivity |
+| `session_save` | Export MCP/Community session state (proxy history, scope, rules, passive issues, Repeater history) to a JSON file |
+| `session_load` | Restore a saved JSON session into memory (`merge` option) and sync scope/rules to Burp if reachable |
+
 ---
 
 ## Usage Examples
@@ -436,15 +446,16 @@ get_scan_issues({ "task_id": "1" })
 +---------------------------------+---------------------------------+
                                   | MCP JSON-RPC (stdio or --http)
 +---------------------------------v---------------------------------+
-|                     src/index.ts (66 tools)                       |
+|                     src/index.ts (69 tools)                       |
 |  +---------+ +---------+ +----------+ +----------+ +----------+   |
 |  |  proxy  | | scanner | | repeater | | intruder | |  spider  |   |
 |  +---------+ +---------+ +----------+ +----------+ +----------+   |
 |  +-----------+ +------------+ +---------+ +----------+ +--------+ |
 |  |  sitemap  | | extensions | | decoder | | comparer | | report | |
 |  +-----------+ +------------+ +---------+ +----------+ +--------+ |
-|                     src/utils/local-store.ts                      |
-|                     src/utils/burp-client.ts                      |
+|  +-----------+                                                    |
+|  |  session  |  src/utils/local-store.ts & src/utils/burp-client  |
+|  +-----------+                                                    |
 +------------------------+-----------------------+------------------+
                          | REST (:1337)          | HTTP Proxy (:8080)
 +------------------------v-----------------------v------------------+

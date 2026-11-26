@@ -735,3 +735,122 @@ export function stopLocalCrawl(taskId: string): LocalCrawlTask | undefined {
 export function listLocalCrawls(): LocalCrawlTask[] {
   return Array.from(localCrawls.values());
 }
+
+// ── Session Snapshot Export / Import ─────────────────────────
+
+export interface LocalStoreSnapshot {
+  proxy_history: LocalExchangeRecord[];
+  scope: { included: string[]; excluded: string[] };
+  match_replace_rules: LocalMatchReplaceRule[];
+  passive_issues: LocalPassiveIssue[];
+}
+
+export function getLocalStoreStats() {
+  return {
+    proxy_history_count: historyItems.length,
+    scope_included_count: scopeConfig.included.length,
+    scope_excluded_count: scopeConfig.excluded.length,
+    match_replace_rules_count: matchReplaceRules.size,
+    passive_issues_count: passiveIssues.size,
+    crawls_count: localCrawls.size,
+  };
+}
+
+export function exportLocalStoreSnapshot(): LocalStoreSnapshot {
+  return {
+    proxy_history: historyItems.map((h) => ({ ...h })),
+    scope: {
+      included: [...scopeConfig.included],
+      excluded: [...scopeConfig.excluded],
+    },
+    match_replace_rules: Array.from(matchReplaceRules.values()).map((r) => ({ ...r })),
+    passive_issues: Array.from(passiveIssues.values()).map((i) => ({ ...i })),
+  };
+}
+
+export function importLocalStoreSnapshot(
+  snapshot: Partial<LocalStoreSnapshot>,
+  merge = false
+): {
+  proxy_history_loaded: number;
+  scope_included_loaded: number;
+  scope_excluded_loaded: number;
+  match_replace_rules_loaded: number;
+  passive_issues_loaded: number;
+} {
+  if (!merge) {
+    historyItems.length = 0;
+    nextHistoryId = 1;
+    scopeConfig.included = [];
+    scopeConfig.excluded = [];
+    matchReplaceRules.clear();
+    passiveIssues.clear();
+  }
+
+  let historyLoaded = 0;
+  if (Array.isArray(snapshot.proxy_history)) {
+    for (const item of snapshot.proxy_history) {
+      if (!item || typeof item !== "object" || !item.request?.url) continue;
+      const assignedId =
+        !merge && typeof item.id === "number" && item.id > 0
+          ? item.id
+          : nextHistoryId++;
+      if (assignedId >= nextHistoryId) {
+        nextHistoryId = assignedId + 1;
+      }
+      historyItems.push({
+        ...item,
+        id: assignedId,
+        messageId: assignedId,
+      });
+      if (historyItems.length > MAX_HISTORY_ITEMS) {
+        historyItems.shift();
+      }
+      historyLoaded++;
+    }
+  }
+
+  let incLoaded = 0;
+  let excLoaded = 0;
+  if (snapshot.scope && typeof snapshot.scope === "object") {
+    for (const u of snapshot.scope.included ?? []) {
+      if (typeof u === "string" && u && !scopeConfig.included.includes(u)) {
+        scopeConfig.included.push(u);
+        incLoaded++;
+      }
+    }
+    for (const u of snapshot.scope.excluded ?? []) {
+      if (typeof u === "string" && u && !scopeConfig.excluded.includes(u)) {
+        scopeConfig.excluded.push(u);
+        excLoaded++;
+      }
+    }
+  }
+
+  let rulesLoaded = 0;
+  if (Array.isArray(snapshot.match_replace_rules)) {
+    for (const rule of snapshot.match_replace_rules) {
+      if (!rule || typeof rule !== "object" || !rule.id) continue;
+      matchReplaceRules.set(rule.id, { ...rule });
+      rulesLoaded++;
+    }
+  }
+
+  let issuesLoaded = 0;
+  if (Array.isArray(snapshot.passive_issues)) {
+    for (const issue of snapshot.passive_issues) {
+      if (!issue || typeof issue !== "object" || !issue.name) continue;
+      const dedupKey = `${issue.issue_type ?? 0}:${issue.host ?? ""}:${issue.path ?? "/"}`;
+      passiveIssues.set(dedupKey, { ...issue });
+      issuesLoaded++;
+    }
+  }
+
+  return {
+    proxy_history_loaded: historyLoaded,
+    scope_included_loaded: incLoaded,
+    scope_excluded_loaded: excLoaded,
+    match_replace_rules_loaded: rulesLoaded,
+    passive_issues_loaded: issuesLoaded,
+  };
+}
