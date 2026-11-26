@@ -79,7 +79,7 @@ A **Model Context Protocol (MCP)** server written in TypeScript that exposes **5
 ### 1. Build the MCP Server
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/Steph-ux/burpsuite-mcp.git
 cd burpsuite-mcp
 npm install
 npm run build
