@@ -360,7 +360,7 @@ A template is provided in [`claude_desktop_config.json`](./claude_desktop_config
 
 | Tool | Description |
 |---|---|
-| `collaborator_generate_payload` | Generate a Burp Collaborator OAST domain/payload (`custom_data`, `secret_key`) |
+| `collaborator_generate_payload` | Generate a Burp Collaborator OAST domain/payload (`custom_data` 1-16 alphanumeric chars `[A-Za-z0-9]`, `secret_key`) |
 | `collaborator_poll_interactions` | Poll Burp Collaborator for received DNS, HTTP, and SMTP out-of-band interactions |
 | `burp_send_to_intruder` | Send a proxy item or raw `request_template` with `§marker§` positions to Burp Intruder UI |
 | `burp_send_to_organizer` | Send a proxy item or custom request/response to Burp Suite Organizer |
@@ -377,8 +377,8 @@ A template is provided in [`claude_desktop_config.json`](./claude_desktop_config
 ### Generate & Poll Burp Collaborator OAST Payloads (Burp Pro)
 
 ```json
-// 1. Generate payload for out-of-band SSRF / Blind XXE
-collaborator_generate_payload({ "custom_data": "ssrf-probe-1" })
+// 1. Generate payload for out-of-band SSRF / Blind XXE (custom_data: <= 16 alphanumeric chars)
+collaborator_generate_payload({ "custom_data": "ssrfprobe1" })
 
 // 2. Poll DNS / HTTP / SMTP interactions
 collaborator_poll_interactions({ "interaction_id": "<interaction_id>" })

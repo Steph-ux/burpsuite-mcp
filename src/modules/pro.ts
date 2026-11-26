@@ -59,7 +59,9 @@ const collaboratorGeneratePayload: McpTool = {
     properties: {
       custom_data: {
         type: "string",
-        description: "Optional short custom identifier encoded into the Montoya Collaborator payload.",
+        description:
+          "Optional identifier encoded into the Montoya Collaborator payload " +
+          "(strictly 1-16 ASCII alphanumeric characters [A-Za-z0-9], no hyphens or symbols).",
       },
       secret_key: {
         type: "string",
@@ -69,6 +71,14 @@ const collaboratorGeneratePayload: McpTool = {
     required: [],
   },
   async handler(args, burpClient) {
+    if (args.custom_data !== undefined && args.custom_data !== "") {
+      const tag = String(args.custom_data);
+      if (!/^[A-Za-z0-9]{1,16}$/.test(tag)) {
+        throw new Error(
+          `Invalid custom_data ("${tag}"): Montoya Collaborator requires strictly 1-16 ASCII alphanumeric characters [A-Za-z0-9] (no hyphens or symbols).`
+        );
+      }
+    }
     return withProBridge(
       burpClient,
       "collaborator_generate_payload",

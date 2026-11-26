@@ -582,6 +582,9 @@ const repeaterSaveRequest: McpTool = {
     },
   },
   handler: async (args) => {
+    if (typeof args.name !== "string" || !args.name.trim()) {
+      throw new Error("Missing or empty required parameter: name");
+    }
     const id = randomUUID();
     const entry: RepeaterEntry = {
       id,

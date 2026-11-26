@@ -1,6 +1,6 @@
 {
   "name": "burpsuite-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "MCP server for BurpSuite Community and Professional integration",
   "license": "MIT",
   "type": "module",

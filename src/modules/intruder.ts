@@ -55,64 +55,44 @@ const attacks = new Map<string, AttackRecord>();
 // ── Payload generation ───────────────────────────────────────
 
 /**
- * Finds all §marker§ positions in the request template and returns their
- * start indices and the clean template (markers removed, replaced by value).
+ * Parses a marked template with §baseline§ delimiters, returning static text
+ * segments (`segments.length === baselines.length + 1`) and the baseline values.
  */
-function parseTemplate(template: string): { positions: Array<[number, number]>; base: string } {
-  const positions: Array<[number, number]> = [];
-  let result = "";
-  let i = 0;
-  while (i < template.length) {
-    if (template[i] === "§") {
-      const end = template.indexOf("§", i + 1);
-      if (end === -1) { result += template[i++]; continue; }
-      positions.push([result.length, end - i - 1]); // [insertAt, originalContentLen]
-      result += ""; // placeholder – length 0 at this point, will be substituted
-      i = end + 1;
+function parseMarkedTemplate(template: string): { segments: string[]; baselines: string[] } {
+  const segments: string[] = [];
+  const baselines: string[] = [];
+  let cursor = 0;
+  let literalStart = 0;
+
+  while (cursor < template.length) {
+    if (template[cursor] === "§") {
+      const end = template.indexOf("§", cursor + 1);
+      if (end === -1) {
+        cursor++;
+        continue;
+      }
+      segments.push(template.slice(literalStart, cursor));
+      baselines.push(template.slice(cursor + 1, end));
+      cursor = end + 1;
+      literalStart = cursor;
     } else {
-      result += template[i++];
+      cursor++;
     }
   }
-  return { positions, base: result };
+  segments.push(template.slice(literalStart));
+  return { segments, baselines };
 }
 
 /**
- * Builds a request string by substituting the payload values into the
- * template at the detected § positions.
+ * Builds a request string by substituting payload values into §marker§ slots.
  */
 function buildRequest(template: string, payloads: string[]): string {
-  let result = "";
-  let i = 0;
-  let posIdx = 0;
-  while (i < template.length) {
-    if (template[i] === "§") {
-      const end = template.indexOf("§", i + 1);
-      if (end === -1) { result += template[i++]; continue; }
-      result += payloads[posIdx] ?? "";
-      posIdx++;
-      i = end + 1;
-    } else {
-      result += template[i++];
-    }
+  const { segments, baselines } = parseMarkedTemplate(template);
+  let result = segments[0] ?? "";
+  for (let i = 0; i < baselines.length; i++) {
+    result += (payloads[i] ?? baselines[i] ?? "") + (segments[i + 1] ?? "");
   }
   return result;
-}
-
-/** Count number of § positions in template */
-function countPositions(template: string): number {
-  let count = 0;
-  let i = 0;
-  while (i < template.length) {
-    if (template[i] === "§") {
-      const end = template.indexOf("§", i + 1);
-      if (end === -1) { i++; continue; }
-      count++;
-      i = end + 1;
-    } else {
-      i++;
-    }
-  }
-  return count;
 }
 
 /**
@@ -122,18 +102,19 @@ function countPositions(template: string): number {
 function generatePayloadCombinations(
   attackType: AttackType,
   payloadSets: string[][],
-  positionCount: number
+  baselines: string[]
 ): Array<{ payloads: string[]; positionIndex: number }> {
+  const positionCount = baselines.length;
   const combos: Array<{ payloads: string[]; positionIndex: number }> = [];
 
   if (attackType === "sniper") {
-    // Single payload set, iterated over each position one at a time
+    // Single payload set, iterated over each position while other positions keep their baseline values
     const set = payloadSets[0] ?? [];
     for (let posIdx = 0; posIdx < positionCount; posIdx++) {
       for (const payload of set) {
         const payloads: string[] = [];
         for (let p = 0; p < positionCount; p++) {
-          payloads.push(p === posIdx ? payload : "");
+          payloads.push(p === posIdx ? payload : (baselines[p] ?? ""));
         }
         combos.push({ payloads, positionIndex: posIdx });
       }
@@ -375,11 +356,11 @@ async function runAttack(
   attack.status = "running";
   attack.started_at = new Date().toISOString();
 
-  const positionCount = countPositions(attack.request_template);
+  const { baselines } = parseMarkedTemplate(attack.request_template);
   const combos = generatePayloadCombinations(
     attack.attack_type,
     attack.payload_sets,
-    positionCount
+    baselines
   );
 
   attack.total_requests = combos.length;
@@ -534,6 +515,25 @@ export const INTRUDER_TOOLS = [
       burpClient?: BurpClient
     ) => {
       const client = burpClient ?? getBurpClient();
+      const maxConcurrent = params.max_concurrent ?? 10;
+      if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1) {
+        throw new Error(
+          `Invalid max_concurrent (${String(params.max_concurrent)}): must be a positive integer >= 1.`
+        );
+      }
+      const timeoutMs = params.request_timeout_ms ?? 10_000;
+      if (!Number.isFinite(timeoutMs) || timeoutMs < 1) {
+        throw new Error(
+          `Invalid request_timeout_ms (${String(params.request_timeout_ms)}): must be a positive number.`
+        );
+      }
+      const { baselines } = parseMarkedTemplate(params.request_template);
+      if (baselines.length === 0) {
+        throw new Error(
+          "Invalid request_template: no §marker§ insertion points found."
+        );
+      }
+
       const attack_id = randomUUID();
       const record: AttackRecord = {
         attack_id,
@@ -543,8 +543,8 @@ export const INTRUDER_TOOLS = [
         use_https: params.use_https,
         request_template: params.request_template,
         payload_sets: params.payload_sets,
-        max_concurrent: params.max_concurrent ?? 10,
-        request_timeout_ms: params.request_timeout_ms ?? 10_000,
+        max_concurrent: maxConcurrent,
+        request_timeout_ms: timeoutMs,
         status: "pending",
         total_requests: 0,
         completed_requests: 0,

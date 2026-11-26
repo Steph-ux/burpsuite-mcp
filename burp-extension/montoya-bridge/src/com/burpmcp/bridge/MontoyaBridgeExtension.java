@@ -591,6 +591,10 @@ public final class MontoyaBridgeExtension implements BurpExtension {
             }
 
             BridgeSupport.sendJson(exchange, 404, Map.of("error", "Endpoint not found in Montoya Bridge", "path", path));
+        } catch (IllegalArgumentException bad) {
+            try {
+                BridgeSupport.sendJson(exchange, 400, Map.of("error", String.valueOf(bad.getMessage()), "type", "IllegalArgumentException"));
+            } catch (Exception ignored) {}
         } catch (Exception e) {
             try {
                 BridgeSupport.sendJson(exchange, 500, Map.of("error", String.valueOf(e.getMessage()), "type", e.getClass().getSimpleName()));

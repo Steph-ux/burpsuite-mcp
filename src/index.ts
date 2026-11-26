@@ -138,7 +138,7 @@ function loadConfig(): BurpConfig {
 
 function createMcpServer(burpClient: BurpClient): Server {
   const server = new Server(
-    { name: "burpsuite-mcp", version: "1.0.0" },
+    { name: "burpsuite-mcp", version: "1.1.0" },
     {
       capabilities: {
         tools: {},
@@ -168,7 +168,17 @@ function createMcpServer(burpClient: BurpClient): Server {
     logger.info(`Calling tool: ${name}`);
 
     try {
-      const result = await tool.handler(args ?? {}, burpClient);
+      const safeArgs = (args ?? {}) as Record<string, unknown>;
+      const requiredKeys = Array.isArray(tool.inputSchema.required)
+        ? (tool.inputSchema.required as unknown[])
+        : [];
+      for (const key of requiredKeys) {
+        if (typeof key === "string" && (safeArgs[key] === undefined || safeArgs[key] === null)) {
+          throw new Error(`Missing required parameter: ${key}`);
+        }
+      }
+
+      const result = await tool.handler(safeArgs, burpClient);
 
       if (
         result !== null &&

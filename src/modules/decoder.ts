@@ -68,24 +68,28 @@ function encodeValue(input: string, format: EncodeFormat): string {
       return input.replace(/[&<>"']/g, (ch) => HTML_ENCODE_MAP[ch] ?? ch);
     case "hex":
       return Buffer.from(input, "utf8").toString("hex");
-    case "unicode_escape":
-      return Array.from(input)
-        .map((ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`)
-        .join("");
+    case "unicode_escape": {
+      // Iterate UTF-16 code units so surrogate pairs (non-BMP emoji/chars) emit \uXXXX\uYYYY cleanly
+      let out = "";
+      for (let i = 0; i < input.length; i++) {
+        out += `\\u${input.charCodeAt(i).toString(16).padStart(4, "0")}`;
+      }
+      return out;
+    }
     case "gzip_base64":
       return gzipSync(Buffer.from(input, "utf8")).toString("base64");
   }
 }
 
 function decodeHtmlEntities(input: string): string {
-  return input.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);/g, (full, entity: string) => {
+  return input.replace(/&(#[xX][0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);/g, (full, entity: string) => {
     if (entity.startsWith("#x") || entity.startsWith("#X")) {
       const cp = parseInt(entity.slice(2), 16);
-      return Number.isFinite(cp) ? String.fromCodePoint(cp) : full;
+      return Number.isFinite(cp) && cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : full;
     }
     if (entity.startsWith("#")) {
       const cp = parseInt(entity.slice(1), 10);
-      return Number.isFinite(cp) ? String.fromCodePoint(cp) : full;
+      return Number.isFinite(cp) && cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : full;
     }
     return HTML_NAMED_DECODE[entity.toLowerCase()] ?? full;
   });
@@ -133,7 +137,7 @@ function detectFormat(input: string): Exclude<DecodeFormat, "auto" | "url_all"> 
   }
   if (/^H4sI[A-Za-z0-9+/=]+$/.test(trimmed)) return "gzip_base64";
   if (/%[0-9a-fA-F]{2}/.test(trimmed)) return "url";
-  if (/\\u[0-9a-fA-F]{4}/.test(trimmed)) return "unicode_escape";
+  if (/\\u(?:[0-9a-fA-F]{4}|\{[0-9a-fA-F]+\})/.test(trimmed)) return "unicode_escape";
   if (/&(?:#x[0-9a-fA-F]+|#[0-9]+|amp|lt|gt|quot|apos|nbsp);/i.test(trimmed)) return "html";
   const cleanedHex = trimmed.replace(/(?:0x|\\x|\s+)/gi, "");
   if (cleanedHex.length >= 4 && cleanedHex.length % 2 === 0 && /^[0-9a-fA-F]+$/.test(cleanedHex)) {
@@ -185,9 +189,13 @@ function decodeValue(
     case "unicode_escape":
       return {
         detected_format: "unicode_escape",
-        output: input.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex: string) =>
-          String.fromCharCode(parseInt(hex, 16))
-        ),
+        output: input.replace(/\\u(?:\{([0-9a-fA-F]+)\}|([0-9a-fA-F]{4}))/g, (full, braced?: string, quad?: string) => {
+          if (braced !== undefined) {
+            const cp = parseInt(braced, 16);
+            return Number.isFinite(cp) && cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : full;
+          }
+          return String.fromCharCode(parseInt(quad!, 16));
+        }),
       };
     case "gzip_base64": {
       const raw = Buffer.from(input.trim(), "base64");

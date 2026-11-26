@@ -464,6 +464,13 @@ describe("MCP server end-to-end (stdio & Streamable HTTP)", () => {
     assert.equal(allIssues.count, 1);
     assert.equal(allIssues.issues[0].path, "/search");
 
+    const badCollab = await mcp.rpc("tools/call", {
+      name: "collaborator_generate_payload",
+      arguments: { custom_data: "bad-tag!" },
+    });
+    assert.equal(badCollab.result?.isError, true);
+    assert.match(badCollab.result?.content?.[0]?.text ?? "", /1-16 ASCII alphanumeric/);
+
     const gen = parseTool(
       await mcp.rpc("tools/call", {
         name: "collaborator_generate_payload",
