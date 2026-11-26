@@ -27,23 +27,44 @@ import java.util.concurrent.atomic.AtomicInteger;
  * definitions, and Burp Collaborator OAST client interactions via Montoya.
  */
 public final class ProFeaturesManager {
+    private static final long CRAWL_IDLE_UNKNOWN_MS = 3_000L;
+
     private static final class ScanTaskRecord {
         final String id;
         final String kind; // "crawl" | "active_audit" | "passive_audit" | "crawl_and_audit"
         final List<String> urls;
+        final Set<String> targetOrigins;
+        final Set<String> baselineSiteMapKeys;
         final String createdAt;
+        final long startedAtMs;
         volatile Crawl crawl;
         volatile Audit audit;
         volatile boolean stopped;
+        volatile int lastSitemapDelta;
+        volatile long lastProgressAtMs;
         final Set<String> fedKeys = ConcurrentHashMap.newKeySet();
 
-        ScanTaskRecord(String id, String kind, List<String> urls) {
+        ScanTaskRecord(String id, String kind, List<String> urls,
+                       Set<String> targetOrigins, Set<String> baselineSiteMapKeys) {
             this.id = id;
             this.kind = kind;
             this.urls = urls;
+            this.targetOrigins = targetOrigins;
+            this.baselineSiteMapKeys = baselineSiteMapKeys;
             this.createdAt = Instant.now().toString();
+            this.startedAtMs = System.currentTimeMillis();
+            this.lastProgressAtMs = this.startedAtMs;
         }
     }
+
+    private record StatusProbe(String message, boolean implemented, String error) {}
+
+    private record SiteMapProgress(
+        int deltaRequests,
+        int totalMatchingRequests,
+        Set<String> deltaUrls,
+        Set<String> totalUrls
+    ) {}
 
     private final MontoyaApi api;
     private final AtomicInteger nextScanId = new AtomicInteger(1);
@@ -99,10 +120,12 @@ public final class ProFeaturesManager {
         boolean passiveOnly = "passive_audit".equalsIgnoreCase(scanMode) || !captured.isEmpty();
 
         String id = String.valueOf(nextScanId.getAndIncrement());
+        Set<String> origins = extractTargetOrigins(urls);
+        Set<String> baselineKeys = snapshotTargetSiteMapKeys(origins);
 
         if (crawlOnly) {
             Crawl crawl = api.scanner().startCrawl(CrawlConfiguration.crawlConfiguration(urls.toArray(String[]::new)));
-            ScanTaskRecord rec = new ScanTaskRecord(id, "crawl", urls);
+            ScanTaskRecord rec = new ScanTaskRecord(id, "crawl", urls, origins, baselineKeys);
             rec.crawl = crawl;
             scans.put(id, rec);
             return buildScanSummary(rec);
@@ -116,7 +139,7 @@ public final class ProFeaturesManager {
         String kind = passiveOnly
             ? "passive_audit"
             : ("active_audit".equalsIgnoreCase(scanMode) ? "active_audit" : "crawl_and_audit");
-        ScanTaskRecord rec = new ScanTaskRecord(id, kind, urls);
+        ScanTaskRecord rec = new ScanTaskRecord(id, kind, urls, origins, baselineKeys);
         rec.audit = audit;
 
         if (!captured.isEmpty()) {
@@ -167,14 +190,12 @@ public final class ProFeaturesManager {
 
     private void feedMatchingSiteMapItems(ScanTaskRecord rec) {
         if (rec.audit == null) return;
-        Set<String> hosts = extractHosts(rec.urls);
         for (HttpRequestResponse item : api.siteMap().requestResponses()) {
             if (rec.stopped) return;
             HttpRequest req = item.request();
-            if (req == null || req.httpService() == null) continue;
-            String host = req.httpService().host().toLowerCase(Locale.ROOT);
-            if (!hosts.contains(host)) continue;
-            String key = req.method() + " " + req.url();
+            HttpService svc = item.httpService();
+            if (req == null || svc == null || !matchesTargetOrigin(svc, rec.targetOrigins)) continue;
+            String key = siteMapEntryKey(item);
             if (rec.fedKeys.add(key)) {
                 try {
                     if (item.hasResponse() && item.response() != null) {
@@ -199,15 +220,76 @@ public final class ProFeaturesManager {
         }, 3, 5, TimeUnit.SECONDS);
     }
 
-    private static Set<String> extractHosts(List<String> urls) {
-        Set<String> hosts = new HashSet<>();
+    private static String normalizeOrigin(String scheme, String host, int port) {
+        if (host == null || host.isBlank()) return "";
+        String s = (scheme == null || scheme.isBlank()) ? "http" : scheme.toLowerCase(Locale.ROOT);
+        int p = port > 0 ? port : ("https".equals(s) ? 443 : 80);
+        return s + "://" + host.toLowerCase(Locale.ROOT) + ":" + p;
+    }
+
+    private static Set<String> extractTargetOrigins(List<String> urls) {
+        Set<String> origins = new HashSet<>();
         for (String u : urls) {
             try {
                 URI uri = URI.create(u);
-                if (uri.getHost() != null) hosts.add(uri.getHost().toLowerCase(Locale.ROOT));
+                if (uri.getHost() != null) {
+                    origins.add(normalizeOrigin(uri.getScheme(), uri.getHost(), uri.getPort()));
+                }
             } catch (Exception ignored) {}
         }
-        return hosts;
+        return origins;
+    }
+
+    private static String serviceOrigin(HttpService svc) {
+        return svc == null ? "" : normalizeOrigin(svc.secure() ? "https" : "http", svc.host(), svc.port());
+    }
+
+    private static boolean matchesTargetOrigin(HttpService svc, Set<String> origins) {
+        return svc != null && origins.contains(serviceOrigin(svc));
+    }
+
+    private static String siteMapEntryKey(HttpRequestResponse item) {
+        HttpRequest req = item.request();
+        String method = req != null ? req.method() : "GET";
+        String url = req != null && req.url() != null ? req.url() : "";
+        return method + " " + url;
+    }
+
+    private Set<String> snapshotTargetSiteMapKeys(Set<String> origins) {
+        Set<String> keys = new HashSet<>();
+        for (HttpRequestResponse item : api.siteMap().requestResponses()) {
+            if (matchesTargetOrigin(item.httpService(), origins)) {
+                keys.add(siteMapEntryKey(item));
+            }
+        }
+        return keys;
+    }
+
+    private SiteMapProgress measureSiteMapProgress(ScanTaskRecord rec) {
+        int deltaReqs = 0;
+        int totalMatching = 0;
+        Set<String> deltaUrls = new LinkedHashSet<>();
+        Set<String> totalUrls = new LinkedHashSet<>();
+
+        for (HttpRequestResponse item : api.siteMap().requestResponses()) {
+            if (!matchesTargetOrigin(item.httpService(), rec.targetOrigins)) continue;
+            totalMatching++;
+            String url = item.request() != null && item.request().url() != null ? item.request().url() : "";
+            if (!url.isEmpty()) totalUrls.add(url);
+            String key = siteMapEntryKey(item);
+            if (!rec.baselineSiteMapKeys.contains(key)) {
+                deltaReqs++;
+                if (!url.isEmpty()) deltaUrls.add(url);
+            }
+        }
+
+        synchronized (rec) {
+            if (deltaReqs > rec.lastSitemapDelta) {
+                rec.lastSitemapDelta = deltaReqs;
+                rec.lastProgressAtMs = System.currentTimeMillis();
+            }
+        }
+        return new SiteMapProgress(deltaReqs, totalMatching, deltaUrls, totalUrls);
     }
 
     private void applyScopeList(Object listObj, boolean include) {
@@ -272,66 +354,142 @@ public final class ProFeaturesManager {
         return true;
     }
 
-    private static String safeStatusMessage(ScanTask task) {
-        if (task == null) return "";
+    private StatusProbe readTaskStatus(ScanTask task, String label, List<String> warnings) {
+        if (task == null) return new StatusProbe("", false, null);
         try {
             String msg = task.statusMessage();
-            return msg != null ? msg : "";
-        } catch (UnsupportedOperationException ignored) {
-            // Crawl.statusMessage() is documented "not yet implemented" in Montoya API
-            return "";
-        } catch (RuntimeException ignored) {
-            return "";
+            return new StatusProbe(msg != null ? msg : "", true, null);
+        } catch (UnsupportedOperationException uoe) {
+            return new StatusProbe("", false, label + ".statusMessage() not implemented");
+        } catch (RuntimeException ex) {
+            String detail = label + ".statusMessage() failed: " + ex.getClass().getSimpleName() + ": " + ex.getMessage();
+            if (api.logging() != null) api.logging().logToError("[MontoyaBridge] " + detail, ex);
+            warnings.add(detail);
+            return new StatusProbe("", false, detail);
         }
     }
 
-    private static int safeInt(java.util.function.IntSupplier fn) {
+    private Integer readTaskInt(java.util.function.IntSupplier fn, String label, List<String> warnings) {
         try {
             return fn.getAsInt();
-        } catch (RuntimeException ignored) {
-            return 0;
+        } catch (UnsupportedOperationException uoe) {
+            String detail = label + " not implemented by Montoya";
+            warnings.add(detail);
+            return null;
+        } catch (RuntimeException ex) {
+            String detail = label + " failed: " + ex.getClass().getSimpleName() + ": " + ex.getMessage();
+            if (api.logging() != null) api.logging().logToError("[MontoyaBridge] " + detail, ex);
+            warnings.add(detail);
+            return null;
         }
     }
 
-    private String computeStatus(ScanTaskRecord rec, String statusMsg) {
-        if (rec.stopped) return "cancelled";
-        String lower = statusMsg.toLowerCase(Locale.ROOT);
-        if (lower.contains("finish") || lower.contains("complet") || lower.contains("succeed") || lower.contains("idle")) {
-            return "succeeded";
-        }
-        if (rec.crawl != null && rec.audit == null) return "crawling";
-        return "auditing";
+    private static boolean isFinishedMessage(String msg) {
+        String lower = msg.toLowerCase(Locale.ROOT);
+        return lower.contains("finish") || lower.contains("complet")
+            || lower.contains("succeed") || lower.contains("idle");
     }
 
     private Map<String, Object> buildScanSummary(ScanTaskRecord rec) {
-        int crawlReqs = rec.crawl != null ? safeInt(rec.crawl::requestCount) : 0;
-        int auditReqs = rec.audit != null ? safeInt(rec.audit::requestCount) : 0;
-        int errs = (rec.crawl != null ? safeInt(rec.crawl::errorCount) : 0)
-            + (rec.audit != null ? safeInt(rec.audit::errorCount) : 0);
+        List<String> warnings = new ArrayList<>();
+        SiteMapProgress sm = measureSiteMapProgress(rec);
+
+        Integer nativeCrawlReqs = rec.crawl != null ? readTaskInt(rec.crawl::requestCount, "Crawl.requestCount", warnings) : null;
+        Integer nativeAuditReqs = rec.audit != null ? readTaskInt(rec.audit::requestCount, "Audit.requestCount", warnings) : null;
+        Integer crawlErrs = rec.crawl != null ? readTaskInt(rec.crawl::errorCount, "Crawl.errorCount", warnings) : null;
+        Integer auditErrs = rec.audit != null ? readTaskInt(rec.audit::errorCount, "Audit.errorCount", warnings) : null;
+
         int issues = 0;
         if (rec.audit != null) {
-            try { issues = rec.audit.issues().size(); } catch (RuntimeException ignored) {}
+            try {
+                issues = rec.audit.issues().size();
+            } catch (RuntimeException ex) {
+                String detail = "Audit.issues() failed: " + ex.getClass().getSimpleName() + ": " + ex.getMessage();
+                if (api.logging() != null) api.logging().logToError("[MontoyaBridge] " + detail, ex);
+                warnings.add(detail);
+            }
         }
-        String statusMsg = rec.audit != null ? safeStatusMessage(rec.audit) : safeStatusMessage(rec.crawl);
-        String computed = computeStatus(rec, statusMsg);
-        if (statusMsg.isEmpty() && rec.crawl != null && rec.audit == null) {
-            statusMsg = rec.stopped ? "cancelled" : "crawling";
+
+        String status;
+        String statusMsg;
+        boolean completionObservable;
+
+        if (rec.stopped) {
+            status = "cancelled";
+            statusMsg = "cancelled";
+            completionObservable = true;
+        } else if (rec.audit != null) {
+            StatusProbe probe = readTaskStatus(rec.audit, "Audit", warnings);
+            if (!probe.implemented) {
+                long idleMs = System.currentTimeMillis() - rec.lastProgressAtMs;
+                status = idleMs < CRAWL_IDLE_UNKNOWN_MS ? "running" : "unknown";
+                statusMsg = "Audit status unavailable (" + (probe.error != null ? probe.error : "unsupported") + ")";
+                completionObservable = false;
+            } else {
+                completionObservable = true;
+                if (isFinishedMessage(probe.message)) {
+                    status = "succeeded";
+                } else {
+                    status = "auditing";
+                }
+                statusMsg = probe.message;
+            }
+        } else {
+            // Crawl-only task: Montoya Crawl.statusMessage() is typically unimplemented
+            StatusProbe probe = readTaskStatus(rec.crawl, "Crawl", warnings);
+            if (probe.implemented && !probe.message.isEmpty()) {
+                completionObservable = true;
+                status = isFinishedMessage(probe.message) ? "succeeded" : "running";
+                statusMsg = probe.message;
+            } else {
+                completionObservable = false;
+                long idleMs = System.currentTimeMillis() - rec.lastProgressAtMs;
+                if (idleMs < CRAWL_IDLE_UNKNOWN_MS) {
+                    status = "running";
+                    statusMsg = "Crawl running (completion not exposed by Montoya Crawl API; tracking target sitemap delta)";
+                } else {
+                    status = "unknown";
+                    statusMsg = "Crawl completion unknown (Montoya Crawl API provides no completion signal; target sitemap delta="
+                        + sm.deltaRequests + ")";
+                }
+            }
+        }
+
+        int effectiveCrawlReqs = (nativeCrawlReqs != null && nativeCrawlReqs > sm.deltaRequests)
+            ? nativeCrawlReqs
+            : sm.deltaRequests;
+        String progressSource = (rec.crawl == null)
+            ? "audit"
+            : ((nativeCrawlReqs != null && nativeCrawlReqs > sm.deltaRequests) ? "montoya-crawl" : "sitemap-delta");
+
+        Integer combinedErrors = null;
+        if (crawlErrs != null || auditErrs != null) {
+            combinedErrors = (crawlErrs != null ? crawlErrs : 0) + (auditErrs != null ? auditErrs : 0);
         }
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", rec.id);
         out.put("task_id", rec.id);
         out.put("kind", rec.kind);
-        out.put("scan_status", computed);
-        out.put("status", computed);
+        out.put("scan_status", status);
+        out.put("status", status);
         out.put("status_message", statusMsg);
+        out.put("completion_observable", completionObservable);
         out.put("urls", rec.urls);
-        out.put("crawl_requests_made", crawlReqs);
+        out.put("crawl_requests_made", effectiveCrawlReqs);
+        out.put("native_crawl_requests_made", nativeCrawlReqs);
+        out.put("sitemap_delta", sm.deltaRequests);
+        out.put("urls_discovered", sm.deltaUrls.size());
+        out.put("target_sitemap_urls", sm.totalUrls.size());
+        out.put("progress_source", progressSource);
         out.put("crawl_requests_queued", 0);
-        out.put("audit_requests_made", auditReqs);
-        out.put("error_count", errs);
+        out.put("audit_requests_made", nativeAuditReqs != null ? nativeAuditReqs : 0);
+        out.put("error_count", combinedErrors);
         out.put("issue_count", issues);
         out.put("createdAt", rec.createdAt);
+        if (!warnings.isEmpty()) {
+            out.put("warnings", warnings);
+        }
         return out;
     }
 
@@ -340,20 +498,14 @@ public final class ProFeaturesManager {
         List<Map<String, Object>> events = new ArrayList<>();
         List<Map<String, Object>> flatIssues = new ArrayList<>();
         if (rec.audit != null) {
-            for (AuditIssue issue : rec.audit.issues()) {
-                Map<String, Object> serialized = BridgeSupport.serializeIssue(issue);
-                flatIssues.add(serialized);
-                events.add(Map.of("issue", serialized));
-            }
+            try {
+                for (AuditIssue issue : rec.audit.issues()) {
+                    Map<String, Object> serialized = BridgeSupport.serializeIssue(issue);
+                    flatIssues.add(serialized);
+                    events.add(Map.of("issue", serialized));
+                }
+            } catch (RuntimeException ignored) {}
         }
-        Set<String> hosts = extractHosts(rec.urls);
-        int discovered = 0;
-        for (HttpRequestResponse item : api.siteMap().requestResponses()) {
-            if (item.httpService() != null && hosts.contains(item.httpService().host().toLowerCase(Locale.ROOT))) {
-                discovered++;
-            }
-        }
-        detail.put("urls_discovered", discovered);
         detail.put("issue_events", events);
         detail.put("issues", flatIssues);
         return detail;

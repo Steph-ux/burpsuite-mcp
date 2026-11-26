@@ -443,6 +443,42 @@ describe("MCP server end-to-end (stdio & Streamable HTTP)", () => {
           res.end(JSON.stringify({ state: req.method === "POST" ? body.state : "RUNNING" }));
           return;
         }
+        if (url.pathname === "/v0.1/scan" && req.method === "GET") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify([{
+            id: "7",
+            task_id: "7",
+            scan_status: "unknown",
+            status: "unknown",
+            urls: ["https://pro.local/"],
+            crawl_requests_made: 3,
+            sitemap_delta: 3,
+            urls_discovered: 3,
+            completion_observable: false,
+            status_message: "Crawl completion unknown (Montoya Crawl API provides no completion signal; target sitemap delta=3)",
+          }]));
+          return;
+        }
+        if (url.pathname === "/v0.1/scan/7" && req.method === "GET") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            id: "7",
+            task_id: "7",
+            scan_status: "unknown",
+            status: "unknown",
+            crawl_requests_made: 3,
+            native_crawl_requests_made: 0,
+            sitemap_delta: 3,
+            crawl_requests_queued: 0,
+            urls_discovered: 3,
+            target_sitemap_urls: 5,
+            progress_source: "sitemap-delta",
+            completion_observable: false,
+            status_message: "Crawl completion unknown",
+            warnings: ["Crawl.requestCount returned 0"],
+          }));
+          return;
+        }
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Endpoint not found in Montoya Bridge", path: url.pathname }));
       });
@@ -541,6 +577,26 @@ describe("MCP server end-to-end (stdio & Streamable HTTP)", () => {
       })
     );
     assert.equal(engine.state, "PAUSED");
+
+    const crawlSt = parseTool(
+      await mcp.rpc("tools/call", {
+        name: "spider_get_crawl_status",
+        arguments: { task_id: "7" },
+      })
+    );
+    assert.equal(crawlSt.status, "unknown");
+    assert.equal(crawlSt.crawl_requests_made, 3);
+    assert.equal(crawlSt.sitemap_delta, 3);
+    assert.equal(crawlSt.completion_observable, false);
+    assert.equal(crawlSt.progress_source, "sitemap-delta");
+    assert.deepEqual(crawlSt.warnings, ["Crawl.requestCount returned 0"]);
+
+    const crawlList = parseTool(
+      await mcp.rpc("tools/call", { name: "spider_list_crawls", arguments: {} })
+    );
+    assert.equal(crawlList.crawls[0].status, "unknown");
+    assert.equal(crawlList.crawls[0].sitemap_delta, 3);
+    assert.equal(crawlList.crawls[0].completion_observable, false);
   });
 
   it("serves Streamable HTTP transport (--http) with Bearer auth and session lifecycle", async () => {

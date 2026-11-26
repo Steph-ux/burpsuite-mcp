@@ -24,9 +24,16 @@ interface BurpScanStatus {
   id?: string | number;
   status?: string;
   scan_status?: string;
+  status_message?: string;
+  completion_observable?: boolean;
   crawl_requests_made?: number;
+  native_crawl_requests_made?: number | null;
+  sitemap_delta?: number;
   crawl_requests_queued?: number;
   urls_discovered?: number;
+  target_sitemap_urls?: number;
+  progress_source?: string;
+  warnings?: string[];
   audit_items?: unknown[];
   issue_events?: unknown[];
 }
@@ -36,6 +43,11 @@ interface BurpScanListItem {
   task_id?: string | number;
   status?: string;
   scan_status?: string;
+  status_message?: string;
+  completion_observable?: boolean;
+  crawl_requests_made?: number;
+  sitemap_delta?: number;
+  urls_discovered?: number;
   urls?: string[];
   createdAt?: string;
 }
@@ -325,6 +337,21 @@ const spiderGetCrawlStatus = {
           crawl_requests_made,
           crawl_requests_queued,
           urls_discovered,
+          ...(data?.sitemap_delta !== undefined ? { sitemap_delta: data.sitemap_delta } : {}),
+          ...(data?.native_crawl_requests_made !== undefined
+            ? { native_crawl_requests_made: data.native_crawl_requests_made }
+            : {}),
+          ...(data?.target_sitemap_urls !== undefined
+            ? { target_sitemap_urls: data.target_sitemap_urls }
+            : {}),
+          ...(data?.progress_source !== undefined ? { progress_source: data.progress_source } : {}),
+          ...(data?.completion_observable !== undefined
+            ? { completion_observable: data.completion_observable }
+            : {}),
+          ...(data?.status_message !== undefined ? { status_message: data.status_message } : {}),
+          ...(Array.isArray(data?.warnings) && data.warnings.length > 0
+            ? { warnings: data.warnings }
+            : {}),
         };
       },
       () => {
@@ -474,6 +501,13 @@ const spiderListCrawls = {
           urls: item.urls ?? [],
           created_at: item.createdAt ?? null,
           mode: "burp-rest-api",
+          ...(item.crawl_requests_made !== undefined ? { crawl_requests_made: item.crawl_requests_made } : {}),
+          ...(item.sitemap_delta !== undefined ? { sitemap_delta: item.sitemap_delta } : {}),
+          ...(item.urls_discovered !== undefined ? { urls_discovered: item.urls_discovered } : {}),
+          ...(item.completion_observable !== undefined
+            ? { completion_observable: item.completion_observable }
+            : {}),
+          ...(item.status_message !== undefined ? { status_message: item.status_message } : {}),
         }));
 
         const all = [...crawls, ...localList];
