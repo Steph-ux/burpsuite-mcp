@@ -11,6 +11,7 @@ import burp.api.montoya.scanner.AuditConfiguration;
 import burp.api.montoya.scanner.BuiltInAuditConfiguration;
 import burp.api.montoya.scanner.Crawl;
 import burp.api.montoya.scanner.CrawlConfiguration;
+import burp.api.montoya.scanner.ScanTask;
 import burp.api.montoya.scanner.audit.Audit;
 import burp.api.montoya.scanner.audit.issues.AuditIssue;
 import burp.api.montoya.scanner.audit.issues.AuditIssueDefinition;
@@ -271,12 +272,30 @@ public final class ProFeaturesManager {
         return true;
     }
 
-    private String computeStatus(ScanTaskRecord rec) {
+    private static String safeStatusMessage(ScanTask task) {
+        if (task == null) return "";
+        try {
+            String msg = task.statusMessage();
+            return msg != null ? msg : "";
+        } catch (UnsupportedOperationException ignored) {
+            // Crawl.statusMessage() is documented "not yet implemented" in Montoya API
+            return "";
+        } catch (RuntimeException ignored) {
+            return "";
+        }
+    }
+
+    private static int safeInt(java.util.function.IntSupplier fn) {
+        try {
+            return fn.getAsInt();
+        } catch (RuntimeException ignored) {
+            return 0;
+        }
+    }
+
+    private String computeStatus(ScanTaskRecord rec, String statusMsg) {
         if (rec.stopped) return "cancelled";
-        String msg = "";
-        if (rec.audit != null && rec.audit.statusMessage() != null) msg = rec.audit.statusMessage();
-        else if (rec.crawl != null && rec.crawl.statusMessage() != null) msg = rec.crawl.statusMessage();
-        String lower = msg.toLowerCase(Locale.ROOT);
+        String lower = statusMsg.toLowerCase(Locale.ROOT);
         if (lower.contains("finish") || lower.contains("complet") || lower.contains("succeed") || lower.contains("idle")) {
             return "succeeded";
         }
@@ -285,21 +304,30 @@ public final class ProFeaturesManager {
     }
 
     private Map<String, Object> buildScanSummary(ScanTaskRecord rec) {
-        int crawlReqs = rec.crawl != null ? rec.crawl.requestCount() : 0;
-        int auditReqs = rec.audit != null ? rec.audit.requestCount() : 0;
-        int errs = (rec.crawl != null ? rec.crawl.errorCount() : 0) + (rec.audit != null ? rec.audit.errorCount() : 0);
-        int issues = rec.audit != null ? rec.audit.issues().size() : 0;
-        String statusMsg = rec.audit != null ? rec.audit.statusMessage() : (rec.crawl != null ? rec.crawl.statusMessage() : "");
+        int crawlReqs = rec.crawl != null ? safeInt(rec.crawl::requestCount) : 0;
+        int auditReqs = rec.audit != null ? safeInt(rec.audit::requestCount) : 0;
+        int errs = (rec.crawl != null ? safeInt(rec.crawl::errorCount) : 0)
+            + (rec.audit != null ? safeInt(rec.audit::errorCount) : 0);
+        int issues = 0;
+        if (rec.audit != null) {
+            try { issues = rec.audit.issues().size(); } catch (RuntimeException ignored) {}
+        }
+        String statusMsg = rec.audit != null ? safeStatusMessage(rec.audit) : safeStatusMessage(rec.crawl);
+        String computed = computeStatus(rec, statusMsg);
+        if (statusMsg.isEmpty() && rec.crawl != null && rec.audit == null) {
+            statusMsg = rec.stopped ? "cancelled" : "crawling";
+        }
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", rec.id);
         out.put("task_id", rec.id);
         out.put("kind", rec.kind);
-        out.put("scan_status", computeStatus(rec));
-        out.put("status", computeStatus(rec));
+        out.put("scan_status", computed);
+        out.put("status", computed);
         out.put("status_message", statusMsg);
         out.put("urls", rec.urls);
         out.put("crawl_requests_made", crawlReqs);
+        out.put("crawl_requests_queued", 0);
         out.put("audit_requests_made", auditReqs);
         out.put("error_count", errs);
         out.put("issue_count", issues);

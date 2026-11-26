@@ -152,3 +152,41 @@ it("deep: Intruder rejects a request without insertion points", async t => {
     }, f.client);
   }, /marker|position|insertion|invalid/i);
 });
+
+it("deep: Intruder handles sequential proxy requests when proxy drops sockets after response", async t => {
+  const net = await import("node:net");
+  let hits = 0;
+  const droppingProxy = net.createServer((socket) => {
+    socket.on("data", () => {
+      hits++;
+      // Simulate Burp forwarding a keep-alive HTTP/1.1 response (no Connection: close)
+      // and closing its proxy-side client socket immediately afterward.
+      socket.write("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+      socket.end();
+    });
+  });
+  droppingProxy.listen(0, "127.0.0.1");
+  await once(droppingProxy, "listening");
+  t.after(() => new Promise((resolve) => droppingProxy.close(resolve)));
+
+  const client = new BurpClient({
+    host: "127.0.0.1", port: droppingProxy.address().port, apiPort: 1,
+    apiKey: "", edition: "community", apiKeyMode: "auto",
+  });
+  const a = await intruder.intruder_start_attack({
+    host: "127.0.0.1", port: 80, use_https: false,
+    request_template: "GET /item?id=§1§ HTTP/1.1\r\n\r\n",
+    attack_type: "sniper",
+    payload_sets: [["1", "2", "3", "4"]],
+    max_concurrent: 1,
+    request_timeout_ms: 1000,
+  }, client);
+  t.after(() => intruder.intruder_clear_attack({ attack_id: a.attack_id }));
+
+  const st = await finished(a.attack_id);
+  assert.equal(st.status, "finished");
+  assert.equal(hits, 4);
+  const res = await intruder.intruder_get_results({ attack_id: a.attack_id });
+  assert.equal(res.results.filter((r) => r.status_code === 200).length, 4);
+  assert.equal(res.results.filter((r) => r.error).length, 0);
+});

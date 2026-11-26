@@ -187,12 +187,13 @@ function sendRawRequest(
       headerMap[key] = val;
     }
 
-    // Send through Burp proxy using CONNECT tunnel
+    // Send through Burp proxy using CONNECT tunnel (agent: false avoids stale keep-alive proxy sockets)
     const proxyOptions: http.RequestOptions = {
       host: burpProxyHost,
       port: burpProxyPort,
       method: "CONNECT",
       path: `${host}:${port}`,
+      agent: false,
     };
 
     const connectReq = http.request(proxyOptions);
@@ -213,6 +214,7 @@ function sendRawRequest(
         method: method ?? "GET",
         path: path ?? "/",
         headers: { ...headerMap, host: headerMap.host ?? `${host}:${port}` },
+        agent: false,
         // For HTTPS we provide the socket directly and respect Burp MITM cert setting
         ...(useHttps
           ? {
@@ -291,6 +293,7 @@ function sendDirectHttpRequest(
       method: method ?? "GET",
       path: `http://${host}:${port}${path ?? "/"}`,
       headers,
+      agent: false, // Burp closes proxy sockets after responding; avoid Node global keep-alive reuse
     };
 
     const req = http.request(options, (res) => {
